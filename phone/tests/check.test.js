@@ -122,3 +122,19 @@ test('updates are unseen until marked seen', async () => {
   assert.equal((await pendingEvents(store)).length, 0);
   assert.equal(await logCount(store), 1);
 });
+
+test('mark all released as read, then undo; unreleased never counts', async () => {
+  const { setProgress, lastReleased, maxRead } = await import('../js/db.js');
+  const store = new MemStore();
+  const sid = await upsertSeries(store, 7, 'Quick Read', 'A. Writer');
+  for (const b of [book(1, null, PAST), book(2, null, PAST), book(2.5, null, PAST), book(3, null, FUTURE), book(4, null, null)]) {
+    await store.put('series_book', { ...b, key: `${sid}:${b.position}`, series_id: sid });
+  }
+  assert.equal(await lastReleased(store, sid, TODAY), 2);
+  await setProgress(store, sid, 2);
+  assert.equal(await maxRead(store, sid), 2);
+  await setProgress(store, sid, 1);          // undo lowers it
+  assert.equal(await maxRead(store, sid), 1);
+  await setProgress(store, sid, 0);
+  assert.equal(await maxRead(store, sid), 0);
+});

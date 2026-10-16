@@ -3,7 +3,7 @@
 import { openIdbStore } from './store-idb.js';
 import { HardcoverClient, HardcoverError } from './hardcover.js';
 import { CoverCache, placeholderUri } from './covers.js';
-import { getSetting, setSetting, maxRead, nowIso } from './db.js';
+import { getSetting, setSetting, maxRead, setProgress, lastReleased, nowIso } from './db.js';
 import { runCheck, updates, pendingEvents, markAllSeen } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
 import { KEYS } from './store-base.js';
@@ -108,10 +108,18 @@ async function viewSeries(id) {
       <div><h1>${esc(s.name)}${s.muted ? ' <span class="badge">Muted</span>' : ''}</h1>
         <p class="meta">${esc(s.author ?? 'Unknown author')} · read up to #${pos(read)}${s.complete ? ' · complete' : ''}</p>
         <p class="meta">${s.last_checked_at ? 'Last checked ' + esc(s.last_checked_at) : 'Not checked yet'}</p>
-        <button data-click="mute" data-id="${s.id}">${s.muted ? 'Unmute' : 'Mute'}</button></div></div>
-    ${books.length ? `<ul class="rows">${books.map((b) => `<li class="${b.position <= read ? 'read' : ''}">
+        <button data-click="mute" data-id="${s.id}">${s.muted ? 'Unmute' : 'Mute'}</button>
+        <button data-click="read-all" data-id="${s.id}">Mark all released as read</button>
+        ${read ? `<button data-click="read-none" data-id="${s.id}">Reset progress</button>` : ''}</div></div>
+    ${books.length ? `<ul class="rows">${books.map((b) => {
+      const whole = Number.isInteger(b.position), isRead = b.position <= read;
+      const btn = !whole ? '' : isRead
+        ? (b.position === read ? ` <button data-click="read-to" data-id="${s.id}" data-pos="${b.position - 1}">Undo</button>` : '')
+        : ` <button data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read up to here</button>`;
+      return `<li class="${isRead ? 'read' : ''}">
         ${img(b.cover_key ?? `sb-${s.id}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover small')}
-        <div><strong>#${pos(b.position)} ${esc(b.title)}</strong><br><span class="meta">${esc(b.release_date ?? 'TBA')} · ${b.position <= read ? 'Read' : 'Unread'}</span></div></li>`).join('')}</ul>`
+        <div><strong>#${pos(b.position)} ${esc(b.title)}</strong><br><span class="meta">${esc(b.release_date ?? 'TBA')} · ${isRead ? 'Read' : 'Unread'}</span>${btn}</div></li>`;
+    }).join('')}</ul>`
       : '<p>No books fetched yet. Use “Check now” in More.</p>'}`;
 }
 
@@ -306,6 +314,13 @@ const clickActions = {
   async assign(el) {
     await assignGroup(store, client, Number(el.dataset.id), { hardcover_series_id: Number(el.dataset.hc), name: el.dataset.name, author: el.dataset.author || null }, covers);
     location.hash = '#/review'; await route();
+  },
+  async 'read-to'(el) { await setProgress(store, Number(el.dataset.id), Number(el.dataset.pos)); await route(); },
+  async 'read-none'(el) { await setProgress(store, Number(el.dataset.id), 0); await route(); },
+  async 'read-all'(el) {
+    const sid = Number(el.dataset.id), p = await lastReleased(store, sid, nowIso().slice(0, 10));
+    if (!p) return toast('No released books to mark.');
+    await setProgress(store, sid, Math.max(p, await maxRead(store, sid))); await route();
   },
   async ignore(el) { await ignoreGroup(store, Number(el.dataset.id)); await route(); },
   async export() {

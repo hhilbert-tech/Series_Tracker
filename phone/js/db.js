@@ -27,4 +27,16 @@ export async function bumpProgress(store, sid, position) {
   const cur = await store.get('user_progress', sid);
   await store.put('user_progress', { series_id: sid, max_position_read: Math.max(cur?.max_position_read ?? 0, p) });
 }
+// Set progress exactly (unlike bumpProgress this can lower it, to undo a mistap).
+export async function setProgress(store, sid, position) {
+  const p = Math.max(0, Math.floor(Number(position) || 0));
+  await store.put('user_progress', { series_id: sid, max_position_read: p });
+}
+// Highest whole-number position already released as of `today` (0 if none).
+export async function lastReleased(store, sid, today) {
+  const ps = (await store.all('series_book'))
+    .filter((r) => r.series_id === sid && Number.isInteger(r.position) && r.release_date && r.release_date.slice(0, 10) <= today)
+    .map((r) => r.position);
+  return ps.length ? Math.max(...ps) : 0;
+}
 export async function maxRead(store, sid) { return (await store.get('user_progress', sid))?.max_position_read ?? 0; }
