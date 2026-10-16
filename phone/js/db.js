@@ -32,11 +32,13 @@ export async function setProgress(store, sid, position) {
   const p = Math.max(0, Number(position) || 0);
   await store.put('user_progress', { series_id: sid, max_position_read: p });
 }
-// Highest position (novellas included) already released as of `today` (0 if none).
+// Highest released position (novellas included) that doesn't jump over an unreleased main book:
+// "read up to X" also covers everything before X, so it stops short of the first unreleased whole number.
 export async function lastReleased(store, sid, today) {
-  const ps = (await store.all('series_book'))
-    .filter((r) => r.series_id === sid && r.release_date && r.release_date.slice(0, 10) <= today)
-    .map((r) => r.position);
+  const rows = (await store.all('series_book')).filter((r) => r.series_id === sid);
+  const out = (r) => r.release_date && r.release_date.slice(0, 10) <= today;
+  const cap = Math.min(Infinity, ...rows.filter((r) => !out(r) && Number.isInteger(r.position)).map((r) => r.position));
+  const ps = rows.filter((r) => out(r) && r.position < cap).map((r) => r.position);
   return ps.length ? Math.max(...ps) : 0;
 }
 // Stop following: drops the series, its book list, progress and updates. The series is remembered as

@@ -272,17 +272,22 @@ async function viewUpcoming() {
   const authors = new Map((await store.all('author')).map((a) => [a.hardcover_author_id, a]));
   const sbs = (await store.all('series_book')).filter((r) => series.get(r.series_id) && !series.get(r.series_id).muted);
   const inSeries = new Set(sbs.map((r) => r.hardcover_book_id));
-  const items = [];
+  const items = [], readOf = new Map();
+  for (const id of series.keys()) readOf.set(id, await maxRead(store, id));
   for (const r of sbs) {
-    if (!r.release_date || r.release_date.slice(0, 10) < cutoff) continue;
-    const s = series.get(r.series_id);
+    if (!r.release_date || r.release_date.slice(0, 10) < cutoff || r.dismissed) continue;
+    const s = series.get(r.series_id), out = r.release_date.slice(0, 10) <= today;
+    if (out && r.position <= readOf.get(r.series_id)) continue;                 // released and already read: nothing to do
     items.push({ date: r.release_date.slice(0, 10), title: `#${pos(r.position)} ${r.title}`, sub: s.name, href: `#/book/${r.series_id}/${r.position}`,
-      ck: r.cover_key ?? `sb-${r.series_id}-${r.position}`, fb: r.cover_key ? '' : r.cover_url, seed: s.name });
+      ck: r.cover_key ?? `sb-${r.series_id}-${r.position}`, fb: r.cover_key ? '' : r.cover_url, seed: s.name,
+      actions: out ? `<button class="small" data-click="read-to" data-id="${r.series_id}" data-pos="${r.position}">Mark read</button>
+        <button class="small" data-click="dismiss" data-kind="series" data-id="${r.series_id}" data-pos="${r.position}">Dismiss</button>` : '' });
   }
   for (const r of await store.all('author_book')) {
     const a = authors.get(r.author_id);
-    if (!a || a.muted || inSeries.has(r.hardcover_book_id) || !r.release_date || r.release_date.slice(0, 10) < cutoff) continue;
-    items.push({ date: r.release_date.slice(0, 10), title: r.title, sub: `${a.name} · author`, href: `#/author/${a.hardcover_author_id}`, ck: null, fb: r.cover_url, seed: a.name });
+    if (!a || a.muted || inSeries.has(r.hardcover_book_id) || !r.release_date || r.release_date.slice(0, 10) < cutoff || r.dismissed) continue;
+    items.push({ date: r.release_date.slice(0, 10), title: r.title, sub: `${a.name} · author`, href: `#/author/${a.hardcover_author_id}`, ck: null, fb: r.cover_url, seed: a.name,
+      actions: r.release_date.slice(0, 10) <= today ? `<button class="small" data-click="dismiss" data-kind="author" data-id="${r.author_id}" data-bid="${r.hardcover_book_id}">Dismiss</button>` : '' });
   }
   items.sort((x, y) => x.date.localeCompare(y.date) || x.title.localeCompare(y.title));
   const monthOf = (d) => new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
@@ -295,10 +300,12 @@ async function viewUpcoming() {
   groups.sort((a, b) => (a.label.startsWith('Out') ? -1 : b.label.startsWith('Out') ? 1 : 0));   // stable otherwise: already date-ordered
   const undated = sbs.filter((r) => !r.release_date).length;
   return `<div class="pagehead"><h1>Upcoming</h1><span class="meta">${items.filter((i) => i.date > today).length} to come</span></div>
+    ${groups.some((g) => g.label.startsWith('Out')) ? '<p class="meta">Books that just came out stay here until you mark them read or dismiss them.</p>' : ''}
     ${groups.length ? groups.map((g) => `<h2 class="label">${esc(g.label)}</h2><ul class="rows">${g.items.map((it) => {
       const w = when(it.date, today);
       return `<li>${img(it.ck, it.fb, it.title, it.seed, 'cover small')}<div class="grow"><a class="booklink" href="${it.href}">${esc(it.title)}</a><br>
-        <span class="meta">${esc(it.sub)}</span><br>${chip(w)} <span class="meta">${esc(fmtDate(it.date, today))}</span></div></li>`; }).join('')}</ul>`).join('')
+        <span class="meta">${esc(it.sub)}</span><br>${chip(w)} <span class="meta">${esc(fmtDate(it.date, today))}</span>
+        ${it.actions ? `<div class="row-actions">${it.actions}</div>` : ''}</div></li>`; }).join('')}</ul>`).join('')
       : '<p>No dated releases yet. Follow a series or author, then run a check.</p>'}
     ${undated ? `<p class="meta">${undated} more book${undated > 1 ? 's' : ''} in your series ${undated > 1 ? 'have' : 'has'} no date yet.</p>` : ''}`;
 }
@@ -437,6 +444,13 @@ const clickActions = {
   async 'mark-seen'() { await markAllSeen(store); toast('All caught up.'); await route(); },
   async 'check-now'() { await checkNow(); },
   async 'remove-token'() { await store.delete('settings', 'hc_token'); toast('Token removed.'); await route(); },
+  async dismiss(el) {
+    const { kind, id, pos: p, bid } = el.dataset;
+    const [table, key] = kind === 'author' ? ['author_book', `${id}:${bid}`] : ['series_book', sbKey(Number(id), Number(p))];
+    const row = await store.get(table, key);
+    if (row) await store.put(table, { ...row, dismissed: 1 });
+    await route();
+  },
   async 'sync-hc'() {
     toast('Syncing from Hardcover…', { ms: 0 });
     const r = await importHardcover(store, client, covers);
