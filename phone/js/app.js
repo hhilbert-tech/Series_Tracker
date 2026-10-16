@@ -36,6 +36,8 @@ function when(d, today = todayIso()) {
   if (n < 730) return { text: `in ${Math.round(n / 30.4)} months`, tone: 'far' };
   return { text: `in ${Math.round(n / 365)} years`, tone: 'far' };
 }
+// Position of the book before `p` (0 if none): what "Undo" falls back to.
+const prevPos = (books, p) => Math.max(0, ...books.map((r) => r.position).filter((x) => x < p));
 const notifyBtn = (sid, b, read) => { const on = notifying(b, read);
   return `<button class="small notify" aria-pressed="${on}" data-click="notify" data-id="${sid}" data-pos="${b.position}">${on ? '🔔 Notifying' : 'Notify me'}</button>`; };
 const chip = (w, extra = '') => `<span class="chip ${w.tone} ${extra}">${esc(w.text)}</span>`;
@@ -152,12 +154,12 @@ async function viewSeries(id) {
         ${read ? `<button data-click="read-none" data-id="${s.id}">Reset progress</button>` : ''}
         <button class="danger" data-click="remove" data-id="${s.id}" data-name="${esc(s.name)}" data-home="1">Remove</button>`)}</div>
     ${books.length ? `<ul class="rows">${books.map((b) => {
-      const whole = Number.isInteger(b.position), isRead = b.position <= read, w = when(b.release_date, today);
+      const isRead = b.position <= read, w = when(b.release_date, today);
       const unreleased = w.tone !== 'ok';
       const btn = isRead
-        ? (whole && b.position === read ? `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position - 1}">Undo</button>` : '')
+        ? (b.position === read ? `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${prevPos(books, b.position)}">Undo</button>` : '')
         : unreleased ? notifyBtn(s.id, b, read)
-        : whole ? `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read to here</button>` : '';
+        : `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read to here</button>`;
       return `<li class="${isRead ? 'read' : ''}">
         ${img(b.cover_key ?? `sb-${s.id}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover small')}
         <div class="grow"><a class="booklink" href="#/book/${s.id}/${b.position}"><span class="num">#${pos(b.position)}</span> ${esc(b.title)}</a><br>
@@ -170,11 +172,11 @@ async function viewBook(sid, position) {
   const s = await store.get('series', sid), b = await store.get('series_book', sbKey(sid, position));
   if (!s || !b) return '<p>No such book. <a href="#/">Back</a></p>';
   const read = await maxRead(store, sid), isRead = b.position <= read, w = when(b.release_date);
-  const whole = Number.isInteger(b.position);
+  const all = (await store.all('series_book')).filter((r) => r.series_id === sid);
   const btn = isRead
-    ? (whole && b.position === read ? `<button data-click="read-to" data-id="${sid}" data-pos="${b.position - 1}">Undo read</button>` : '')
+    ? (b.position === read ? `<button data-click="read-to" data-id="${sid}" data-pos="${prevPos(all, b.position)}">Undo read</button>` : '')
     : w.tone !== 'ok' ? notifyBtn(sid, b, read)
-    : whole ? `<button class="primary" data-click="read-to" data-id="${sid}" data-pos="${b.position}">Read up to here</button>` : '';
+    : `<button class="primary" data-click="read-to" data-id="${sid}" data-pos="${b.position}">Read up to here</button>`;
   afterRender = async () => {
     const box = document.getElementById('book-more');
     if (!box) return;
