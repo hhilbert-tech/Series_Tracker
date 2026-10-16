@@ -39,9 +39,16 @@ export async function lastReleased(store, sid, today) {
     .map((r) => r.position);
   return ps.length ? Math.max(...ps) : 0;
 }
-// Stop following: drops the series, its book list, progress and updates. Books imported from
-// Goodreads are marked ignored so a later re-import doesn't quietly re-follow it.
+// Stop following: drops the series, its book list, progress and updates. The series is remembered as
+// removed (and Goodreads books ignored) so a later import or Hardcover sync doesn't re-follow it.
+export const removedSeriesIds = async (store) => new Set(await getSetting(store, 'removed_series', []));
+export async function unremoveSeries(store, hcId) {
+  const ids = await removedSeriesIds(store);
+  if (ids.delete(hcId)) await setSetting(store, 'removed_series', [...ids]);
+}
 export async function removeSeries(store, sid) {
+  const s = await store.get('series', sid);
+  if (s?.hardcover_series_id != null) await setSetting(store, 'removed_series', [...(await removedSeriesIds(store)), s.hardcover_series_id]);
   for (const r of await store.all('series_book')) if (r.series_id === sid) await store.delete('series_book', r.key);
   for (const r of await store.all('notification_log')) if (r.series_id === sid) await store.delete('notification_log', r.key);
   for (const b of await store.all('book')) if (b.series_id === sid) await store.put('book', { ...b, review_status: 'ignored' });

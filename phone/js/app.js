@@ -3,8 +3,9 @@
 import { openIdbStore } from './store-idb.js';
 import { HardcoverClient, HardcoverError } from './hardcover.js';
 import { CoverCache, placeholderUri } from './covers.js';
-import { getSetting, setSetting, todayIso, sbKey, notifying, maxRead, setProgress, removeSeries, lastReleased, nowIso } from './db.js';
+import { getSetting, setSetting, todayIso, sbKey, notifying, maxRead, setProgress, removeSeries, unremoveSeries, lastReleased, nowIso } from './db.js';
 import { followAuthor, removeAuthor } from './authors.js';
+import { fmtDate, when } from './format.js';
 import { runCheck, updates, pendingEvents, markAllSeen } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
 import { KEYS } from './store-base.js';
@@ -19,23 +20,6 @@ const objectUrls = new Map();
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pos = (p) => (p == null ? '' : String(Number(p)));
-const fmtDate = (d) => {
-  if (!d) return 'Date TBA';
-  const t = new Date(d.slice(0, 10) + 'T00:00:00');
-  return Number.isNaN(t.getTime()) ? d : t.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
-};
-// "in 3 weeks" / "Out now" with a tone for the chip colour.
-function when(d, today = todayIso()) {
-  if (!d) return { text: 'Date TBA', tone: 'tba' };
-  const n = Math.round((new Date(d.slice(0, 10) + 'T00:00:00') - new Date(today + 'T00:00:00')) / 864e5);
-  if (Number.isNaN(n)) return { text: 'Date TBA', tone: 'tba' };
-  if (n < 0) return { text: 'Out now', tone: 'ok' };
-  if (n === 0) return { text: 'Today', tone: 'soon' };
-  if (n <= 30) return { text: `in ${n} day${n > 1 ? 's' : ''}`, tone: 'soon' };
-  if (n < 90) return { text: `in ${Math.round(n / 7)} weeks`, tone: 'near' };
-  if (n < 730) return { text: `in ${Math.round(n / 30.4)} months`, tone: 'far' };
-  return { text: `in ${Math.round(n / 365)} years`, tone: 'far' };
-}
 // Position of the book before `p` (0 if none): what "Undo" falls back to.
 const prevPos = (books, p) => Math.max(0, ...books.map((r) => r.position).filter((x) => x < p));
 const notifyBtn = (sid, b, read) => { const on = notifying(b, read);
@@ -125,7 +109,11 @@ async function viewHome() {
   }
   const muted = series.filter((s) => s.muted).length;
   const unseen = (await pendingEvents(store)).length;
+  const backupDue = (series.length || authors.length) && (Date.now() - Date.parse((await getSetting(store, 'last_backup', null)) ?? (await getSetting(store, 'first_seen', nowIso())))) > 30 * 864e5;
+  const hasToken = Boolean(await getSetting(store, 'hc_token', ''));
   return `<div class="pagehead"><h1>Following</h1><span class="meta">${series.length - muted} series${muted ? ` · ${muted} muted` : ''}${authors.length ? ` · ${authors.length} author${authors.length > 1 ? 's' : ''}` : ''}</span></div>
+    ${backupDue ? '<div class="flash"><span>It has been a while since your last backup.</span> <button class="small" data-click="export">Back up now</button></div>' : ''}
+    ${hasToken && series.length ? '<p><button class="small" data-click="sync-hc">Sync reading progress from Hardcover</button></p>' : ''}
     ${unseen ? `<a class="flash" href="#/updates"><span class="badge fill">${unseen}</span> new update${unseen > 1 ? 's' : ''} — see what's new</a>` : ''}
     ${series.length ? `<ul class="cards">${cards.join('')}</ul>`
       : `<p>Nothing followed yet.</p><p><a class="btn" href="#/more">Import your reading history</a> or <a href="#/search">search for a series</a>.</p>`}
@@ -277,6 +265,44 @@ async function viewSearch(params) {
     <div id="results" aria-live="polite"></div>`;
 }
 
+async function viewUpcoming() {
+  const today = todayIso();
+  const ago = new Date(Date.now() - 30 * 864e5), cutoff = `${ago.getFullYear()}-${String(ago.getMonth() + 1).padStart(2, '0')}-${String(ago.getDate()).padStart(2, '0')}`;
+  const series = new Map((await store.all('series')).map((s) => [s.id, s]));
+  const authors = new Map((await store.all('author')).map((a) => [a.hardcover_author_id, a]));
+  const sbs = (await store.all('series_book')).filter((r) => series.get(r.series_id) && !series.get(r.series_id).muted);
+  const inSeries = new Set(sbs.map((r) => r.hardcover_book_id));
+  const items = [];
+  for (const r of sbs) {
+    if (!r.release_date || r.release_date.slice(0, 10) < cutoff) continue;
+    const s = series.get(r.series_id);
+    items.push({ date: r.release_date.slice(0, 10), title: `#${pos(r.position)} ${r.title}`, sub: s.name, href: `#/book/${r.series_id}/${r.position}`,
+      ck: r.cover_key ?? `sb-${r.series_id}-${r.position}`, fb: r.cover_key ? '' : r.cover_url, seed: s.name });
+  }
+  for (const r of await store.all('author_book')) {
+    const a = authors.get(r.author_id);
+    if (!a || a.muted || inSeries.has(r.hardcover_book_id) || !r.release_date || r.release_date.slice(0, 10) < cutoff) continue;
+    items.push({ date: r.release_date.slice(0, 10), title: r.title, sub: `${a.name} · author`, href: `#/author/${a.hardcover_author_id}`, ck: null, fb: r.cover_url, seed: a.name });
+  }
+  items.sort((x, y) => x.date.localeCompare(y.date) || x.title.localeCompare(y.title));
+  const monthOf = (d) => new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const groups = [];
+  for (const it of items) {
+    const label = it.date <= today ? 'Out in the last 30 days' : monthOf(it.date);
+    const g = groups.find((x) => x.label === label) ?? groups[groups.push({ label, items: [] }) - 1];
+    g.items.push(it);
+  }
+  groups.sort((a, b) => (a.label.startsWith('Out') ? -1 : b.label.startsWith('Out') ? 1 : 0));   // stable otherwise: already date-ordered
+  const undated = sbs.filter((r) => !r.release_date).length;
+  return `<div class="pagehead"><h1>Upcoming</h1><span class="meta">${items.filter((i) => i.date > today).length} to come</span></div>
+    ${groups.length ? groups.map((g) => `<h2 class="label">${esc(g.label)}</h2><ul class="rows">${g.items.map((it) => {
+      const w = when(it.date, today);
+      return `<li>${img(it.ck, it.fb, it.title, it.seed, 'cover small')}<div class="grow"><a class="booklink" href="${it.href}">${esc(it.title)}</a><br>
+        <span class="meta">${esc(it.sub)}</span><br>${chip(w)} <span class="meta">${esc(fmtDate(it.date, today))}</span></div></li>`; }).join('')}</ul>`).join('')
+      : '<p>No dated releases yet. Follow a series or author, then run a check.</p>'}
+    ${undated ? `<p class="meta">${undated} more book${undated > 1 ? 's' : ''} in your series ${undated > 1 ? 'have' : 'has'} no date yet.</p>` : ''}`;
+}
+
 async function viewUpdates() {
   const list = (await updates(store)).sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? '')).slice(0, 100);
   const unseen = list.filter((n) => !n.seen_at).length;
@@ -353,6 +379,7 @@ async function viewMore() {
 
     <section class="panel"><h2>Backup</h2>
       <p class="meta">Your data lives only on this phone. Export a backup now and then (it does not include your token).</p>
+      <p class="meta">Last backup: ${esc((await getSetting(store, 'last_backup', null))?.slice(0, 10) ?? 'never')} · Storage: ${(await navigator.storage?.persisted?.()) ? 'protected from automatic clearing' : 'not guaranteed (the browser may clear it if space runs low)'}</p>
       <p><button data-click="export">Export backup</button></p>
       <form class="stack" data-form="restore"><label>Restore from backup<input type="file" name="file" accept=".json,application/json"></label><button>Restore</button></form></section>
 
@@ -369,10 +396,10 @@ async function route() {
   const [path, qs = ''] = location.hash.replace(/^#/, '').split('?');
   const params = new URLSearchParams(qs);
   const [, seg, arg] = path.split('/');
-  const tab = { '': 'home', series: 'home', search: 'search', updates: 'updates', book: 'home', author: 'home' }[seg ?? ''] ?? 'more';
+  const tab = { '': 'home', series: 'home', search: 'search', updates: 'updates', book: 'home', author: 'home', upcoming: 'upcoming' }[seg ?? ''] ?? 'more';
   let html;
   try {
-    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), search: () => viewSearch(params), updates: viewUpdates,
+    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), upcoming: viewUpcoming, search: () => viewSearch(params), updates: viewUpdates,
       manual: viewManual, review: () => viewReview(params), more: viewMore }[seg ?? ''] ?? viewHome)();
   } catch (e) { html = `<p class="error">${esc(msg(e))}</p>`; }
   $app.innerHTML = html;
@@ -410,6 +437,11 @@ const clickActions = {
   async 'mark-seen'() { await markAllSeen(store); toast('All caught up.'); await route(); },
   async 'check-now'() { await checkNow(); },
   async 'remove-token'() { await store.delete('settings', 'hc_token'); toast('Token removed.'); await route(); },
+  async 'sync-hc'() {
+    toast('Syncing from Hardcover…', { ms: 0 });
+    const r = await importHardcover(store, client, covers);
+    toast(`Synced: ${r.series_followed} series checked against your Hardcover library.` + (r.errors.length ? ' Problem: ' + r.errors[0] : '')); await route();
+  },
   async 'import-hc'() {
     if (await needToken()) return;
     toast('Importing from Hardcover…', { ms: 0 });
@@ -450,6 +482,7 @@ const clickActions = {
     for (const t of Object.keys(KEYS)) if (t !== 'covers') dump.tables[t] = (await store.all(t)).filter((r) => !(t === 'settings' && r.key === 'hc_token'));
     const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([JSON.stringify(dump)], { type: 'application/json' })), download: `series-tracker-${nowIso().slice(0, 10)}.json` });
     a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    await setSetting(store, 'last_backup', nowIso()); toast('Backup downloaded.', { ms: 3000 }); await route();
   },
   async verify() {
     if (await needToken()) return;
@@ -472,6 +505,7 @@ const clickActions = {
 const formActions = {
   async search(fd) { await runSearch(fd.get('q') ?? ''); },
   async follow(fd) {
+    await unremoveSeries(store, Number(fd.get('hardcover_series_id')));
     const sid = await followSeries(store, client, { hardcover_series_id: Number(fd.get('hardcover_series_id')), name: fd.get('name'),
       author: fd.get('author') || null, cover_url: fd.get('cover_url') || null, complete: Boolean(fd.get('complete')) },
       Math.max(0, parseInt(fd.get('read_up_to'), 10) || 0), covers);
@@ -549,6 +583,7 @@ async function main() {
   covers = new CoverCache(store);
   client = new HardcoverClient({ getToken: () => getSetting(store, 'hc_token', '') });
   theme = await getSetting(store, 'theme', 'system'); applyTheme(theme);
+  if (!(await getSetting(store, 'first_seen', null))) await setSetting(store, 'first_seen', nowIso());
   try { await navigator.storage?.persist?.(); } catch { /* optional */ }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js', { type: 'module' }).catch(() => {});
   await route();

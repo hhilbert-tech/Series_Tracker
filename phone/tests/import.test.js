@@ -155,3 +155,20 @@ test('review: assign links the whole group; ignore hides it', async () => {
   await ignoreGroup(store, skip.lead.id);
   assert.equal((await reviewGroups(store)).length, 0);
 });
+
+test('a removed series is not re-followed by a Hardcover sync, until followed again on purpose', async () => {
+  const { removeSeries, unremoveSeries, maxRead: mr } = await import('../js/db.js');
+  const store = new MemStore(), client = new FakeClient();
+  client.library = [{ hardcover_book_id: 5, title: 'B2', author: 'A', isbn13: null, read: true,
+    series: [{ hardcover_series_id: 30, name: 'S', author: 'A', position: 2, complete: false }] }];
+  client.series[30] = [book(1, null, PAST), book(2, null, PAST), book(3, null, FUTURE)];
+  await importHardcover(store, client);
+  const s = await only(store, 'series');
+  await removeSeries(store, s.id);
+  const res = await importHardcover(store, client);
+  assert.equal(res.series_followed, 0);
+  assert.equal((await store.all('series')).length, 0);
+  await unremoveSeries(store, 30);                       // user follows it again
+  await importHardcover(store, client);
+  assert.equal(await mr(store, (await only(store, 'series')).id), 2);
+});

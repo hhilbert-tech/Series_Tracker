@@ -1,6 +1,6 @@
 // Import (Goodreads CSV / Hardcover library), series matching, and the shared "follow a series" step.
 import { HardcoverAuthError, HardcoverError } from './hardcover.js';
-import { bumpProgress, nowIso, todayIso, upsertSeries } from './db.js';
+import { bumpProgress, nowIso, todayIso, upsertSeries, removedSeriesIds } from './db.js';
 import { syncSeries } from './check.js';
 import { parseGoodreadsCsv, cleanIsbn } from './parse.js';
 
@@ -129,17 +129,18 @@ export async function importGoodreads(store, text, client, covers = null) {
 
 export async function importHardcover(store, client, covers = null) {
   const res = { books_imported: 0, series_followed: 0, needs_review: 0, errors: [] };
-  const followed = new Set();
+  const followed = new Set(), removed = await removedSeriesIds(store);
   for (const item of await client.myLibrary()) {
-    if (!item.series.length) continue;
-    const first = item.series[0];
+    const mine = item.series.filter((s) => !removed.has(s.hardcover_series_id));
+    if (!mine.length) continue;
+    const first = mine[0];
     let b = (await store.all('book')).find((x) => x.source === 'hardcover' && x.hardcover_book_id === item.hardcover_book_id);
     if (!b) {
       b = await newBook(store, { title: item.title, author: item.author, series_name_raw: first.name, series_position: first.position,
         source: 'hardcover', hardcover_book_id: item.hardcover_book_id });
       res.books_imported++;
     }
-    for (const [i, s] of item.series.entries()) {
+    for (const [i, s] of mine.entries()) {
       const sid = await followSeries(store, client, s, item.read ? s.position : 0, covers);
       followed.add(sid);
       if (i === 0) await linkBook(store, b.id, sid, s.position);
