@@ -30,20 +30,30 @@ export async function bumpProgress(store, sid, position) {
 // Set progress exactly (unlike bumpProgress this can lower it, and it may be a novella position like 4.5).
 // Per-book overrides (row.read true/false) win over the max-position model. "Read up to here" and resets
 // clear the overrides they cover; raising progress keeps nothing contradictory, lowering it drops "read" ticks above it.
+// When you last changed what you've read in a series (for "recently read" sorting).
+async function touchRead(store, sid) { const s = await store.get('series', sid); if (s) await store.put('series', { ...s, last_read_at: nowIso() }); }
 export const isRead = (row, max) => row.read ?? row.position <= max;
 export async function setProgress(store, sid, position) {
   const p = Math.max(0, Number(position) || 0), old = (await store.get('user_progress', sid))?.max_position_read ?? 0;
   await store.put('user_progress', { series_id: sid, max_position_read: p });
+  await touchRead(store, sid);
   for (const r of await store.all('series_book')) {
-    if (r.series_id !== sid || r.read === undefined) continue;
-    if (p === 0 || r.position <= p || (r.position <= old && r.read === true)) { const { read, ...rest } = r; await store.put('series_book', rest); }
+    if (r.series_id !== sid) continue;
+    let row = r;
+    if (r.read !== undefined && (p === 0 || r.position <= p || (r.position <= old && r.read === true))) { const { read, ...rest } = r; row = rest; }
+    // when it was marked read (for stats); only books this call newly marks get today's date
+    if (r.position <= p && r.position > old && r.read !== true && !r.read_at) row = { ...row, read_at: nowIso() };
+    if (p === 0 && row.read_at) { const { read_at, ...rest } = row; row = rest; }
+    if (row !== r) await store.put('series_book', row);
   }
 }
 export async function toggleRead(store, sid, position) {
   const row = await store.get('series_book', sbKey(sid, position));
   if (!row) return null;
   const on = !isRead(row, await maxRead(store, sid));
-  await store.put('series_book', { ...row, read: on });
+  const { read_at, ...rest } = row;
+  await store.put('series_book', on ? { ...rest, read: on, read_at: nowIso() } : { ...rest, read: on });
+  await touchRead(store, sid);
   return on;
 }
 // Highest released position (novellas included) that doesn't jump over an unreleased main book:

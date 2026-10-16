@@ -42,3 +42,5 @@ confirmed against the live schema. If anything is listed as missing, the queries
 ## Added later
 - Per-book read ticks (a skipped book stays unread), "Next to read" shelf on Home, "Get it / Pre-order" links to a store you pick in More,
   ratings and sorting on suggestions, cover lookup by title on Open Library when no cover is found.
+- Following: sort and filters; series rows with read ticks (swipe a row to tick it); book pages with previous/next and Hardcover's similar books;
+  grouped Updates (swipe to dismiss); search tabs; More split into sections; reading stats; calendar (.ics) export of upcoming releases.

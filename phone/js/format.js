@@ -32,3 +32,18 @@ export function storeLink(store, title, author = '') {
   return ({ amazon: `https://www.amazon.es/s?k=${q}&i=stripbooks`, kobo: `https://www.kobo.com/es/en/search?query=${q}`,
     google: `https://www.google.com/search?tbm=bks&q=${q}` }[store]) ?? `https://hardcover.app/search?q=${q}`;
 }
+
+// A stored timestamp (ISO, UTC) for people: "just now", "5 min ago", "today 20:31", "yesterday 08:10", "12 Oct 2026".
+export function ago(iso, now = Date.now()) {
+  if (!iso) return 'never';
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return String(iso);
+  const d = new Date(t), mins = Math.round((now - t) / 6e4);
+  if (mins >= 0 && mins < 1) return 'just now';
+  if (mins >= 0 && mins < 60) return `${mins} min ago`;
+  const hm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const day = (x) => new Date(x).toDateString(), n = new Date(now);
+  if (day(t) === day(now)) return `today ${hm}`;
+  if (day(t) === day(new Date(n.getFullYear(), n.getMonth(), n.getDate() - 1))) return `yesterday ${hm}`;
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}

@@ -221,3 +221,21 @@ test('"read up to here" clears overrides it covers; reset clears everything', as
   rows = new Map((await store.all('series_book')).map((r) => [r.position, r]));
   assert.ok([...rows.values()].every((r) => r.read === undefined));
 });
+
+test('read_at: set when a book is marked read (tick or progress), cleared on unread/reset', async () => {
+  const store = new MemStore(), client = new FakeClient();
+  const sid = await addSeries(store, { maxRead: 0 }); client.series[1] = four(PAST);
+  await runCheck(store, client, { today: TODAY });
+  await toggleRead(store, sid, 1);
+  const r1 = await store.get('series_book', `${sid}:1`);
+  assert.ok(r1.read_at && r1.read === true);
+  await setProgress(store, sid, 3);
+  const rows = new Map((await store.all('series_book')).map((r) => [r.position, r]));
+  assert.ok(rows.get(2).read_at && rows.get(3).read_at);
+  assert.equal(rows.get(4).read_at, undefined);
+  await toggleRead(store, sid, 2);
+  assert.equal((await store.get('series_book', `${sid}:2`)).read_at, undefined);
+  await setProgress(store, sid, 0);
+  assert.ok((await store.all('series_book')).every((r) => r.read_at === undefined));
+  assert.ok((await store.get('series', sid)).last_read_at);
+});

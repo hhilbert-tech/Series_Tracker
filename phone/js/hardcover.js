@@ -222,10 +222,10 @@ export class HardcoverClient {
     ids = [...new Set(ids)].slice(0, 60).map(Number);
     if (!ids.length) return [];
     const data = await this.gql(`query BooksInfo($ids: [Int!]) { books(where: {id: {_in: $ids}, canonical_id: {_is_null: true}}) {
-      id title users_count rating image { url } book_series(limit: 1) { series { ${SERIES_FIELDS} } } } }`, { ids });
+      id title users_count rating pages image { url } book_series(limit: 1) { series { ${SERIES_FIELDS} } } } }`, { ids });
     return (data.books ?? []).map((b) => {
       const s = b.book_series?.[0]?.series;
-      return { hardcover_book_id: Number(b.id), title: b.title ?? '', users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null,
+      return { hardcover_book_id: Number(b.id), title: b.title ?? '', users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null,
         cover_url: b.image?.url ?? null,
         series: s?.id ? { hardcover_series_id: Number(s.id), name: s.name ?? '', author: s.author?.name ?? null, complete: Boolean(s.is_completed) } : null };
     });

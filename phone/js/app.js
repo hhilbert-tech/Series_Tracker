@@ -5,7 +5,8 @@ import { HardcoverClient, HardcoverError } from './hardcover.js';
 import { CoverCache, placeholderUri } from './covers.js';
 import { getSetting, setSetting, todayIso, sbKey, notifying, maxRead, setProgress, removeSeries, unremoveSeries, lastReleased, nowIso, isRead, toggleRead } from './db.js';
 import { followAuthor, removeAuthor, refreshAuthorMeta } from './authors.js';
-import { fmtDate, when, STORES, storeLink } from './format.js';
+import { fmtDate, when, ago, isEstimated, STORES, storeLink } from './format.js';
+import { buildIcs } from './ics.js';
 import { buildRecs, loadRecs, dismissRec, recsStale } from './recs.js';
 import { runCheck, updates, pendingEvents, markAllSeen, dismissUpdate, dismissAllUpdates } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
@@ -36,7 +37,7 @@ const msg = (e) => (e instanceof HardcoverError ? e.message : 'Something went wr
 
 // ---- feedback ---------------------------------------------------------------------------
 let toastTimer;
-function toast(text, { error = false, ms = 7000 } = {}) {
+function toast(text, { error = false, ms = error ? 6000 : 3000 } = {}) {
   const el = document.getElementById('toast');
   clearTimeout(toastTimer);
   el.textContent = text; el.className = error ? 'error' : '';
@@ -103,30 +104,46 @@ function seriesCard(s, read, next, prog) {
       <button class="danger" data-click="remove" data-id="${s.id}" data-name="${esc(s.name)}">Remove</button>`)}</li>`;
 }
 
+// What state a followed series is in (for the Following filters).
+function seriesState(s, mine, read, today) {
+  const released = mine.filter((r) => r.release_date && r.release_date.slice(0, 10) <= today && Number.isInteger(r.position));
+  const started = mine.some((r) => isRead(r, read)), caughtUp = released.every((r) => isRead(r, read));
+  if (s.muted) return 'muted';
+  if (caughtUp && started && s.complete) return 'finished';
+  if (caughtUp && started) return 'waiting';
+  return started ? 'reading' : 'unstarted';
+}
+const FOLLOW_SORTS = [['next', 'Next release'], ['recent', 'Recently read'], ['az', 'A–Z'], ['progress', 'Progress']];
+const FILTERS = [['all', 'All'], ['reading', 'Reading'], ['waiting', 'Waiting'], ['finished', 'Finished'], ['muted', 'Muted']];
 async function viewFollowing() {
-  const series = (await store.all('series')).sort((a, b) => a.muted - b.muted || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  const today = todayIso(), sort = await getSetting(store, 'follow_sort', 'next'), filter = await getSetting(store, 'follow_filter', 'all');
   const sbs = await store.all('series_book');
   const authors = (await store.all('author')).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-  const cards = [];
-  for (const s of series) {
+  const rows = [];
+  for (const s of await store.all('series')) {
     const read = await maxRead(store, s.id), mine = sbs.filter((r) => r.series_id === s.id);
     const next = mine.filter((r) => Number.isInteger(r.position) && r.position > read && r.read !== true).sort((a, b) => a.position - b.position)[0];
-    cards.push(seriesCard(s, read, next, progress(mine, read)));
+    const prog = progress(mine, read);
+    rows.push({ s, read, next, prog, state: seriesState(s, mine, read, today) });
   }
-  const muted = series.filter((s) => s.muted).length;
-  const unseen = (await pendingEvents(store)).length;
+  const counts = Object.fromEntries(FILTERS.map(([k]) => [k, k === 'all' ? rows.filter((r) => r.state !== 'muted').length : rows.filter((r) => r.state === k).length]));
+  const shown = rows.filter((r) => (filter === 'all' ? r.state !== 'muted' : r.state === filter));
+  const name = (r) => r.s.name.toLowerCase();
+  shown.sort(sort === 'az' ? (x, y) => name(x).localeCompare(name(y))
+    : sort === 'recent' ? (x, y) => (y.s.last_read_at ?? '').localeCompare(x.s.last_read_at ?? '') || name(x).localeCompare(name(y))
+    : sort === 'progress' ? (x, y) => (y.prog.total ? y.prog.read / y.prog.total : 0) - (x.prog.total ? x.prog.read / x.prog.total : 0) || name(x).localeCompare(name(y))
+    : (x, y) => (x.next?.release_date ?? '9999').localeCompare(y.next?.release_date ?? '9999') || name(x).localeCompare(name(y)));
   const hasToken = Boolean(await getSetting(store, 'hc_token', ''));
-  return `<div class="pagehead"><h1>Following</h1><span class="meta">${series.length - muted} series${muted ? ` · ${muted} muted` : ''}${authors.length ? ` · ${authors.length} author${authors.length > 1 ? 's' : ''}` : ''}</span></div>
-    ${hasToken && series.length ? '<p><button class="small" data-click="sync-hc">Sync reading progress from Hardcover</button></p>' : ''}
-    ${unseen ? `<a class="flash" href="#/updates"><span class="badge fill">${unseen}</span> new update${unseen > 1 ? 's' : ''} — see what's new</a>` : ''}
-    ${series.length ? `<ul class="cards">${cards.join('')}</ul>`
-      : `<p>Nothing followed yet.</p><p><a class="btn" href="#/more">Import your reading history</a> or <a href="#/search">search for a series</a>.</p>`}
-    ${authors.length ? `<h2 class="label">Authors</h2><ul class="cards">${authors.map((a) => `<li class="card ${a.muted ? 'is-muted' : ''}">
-      <a class="cardlink" href="#/author/${a.hardcover_author_id}">${img(null, a.cover_url, a.name, a.name)}
-        <div class="body"><h2>${esc(a.name)}${a.muted ? ' <span class="badge">Muted</span>' : ''}</h2>
-        <p class="meta">New books show up in Updates</p></div></a>
-      ${menu(a.name, `<button data-click="mute-author" data-id="${a.hardcover_author_id}">${a.muted ? 'Unmute' : 'Mute'}</button>
-        <button class="danger" data-click="remove-author" data-id="${a.hardcover_author_id}" data-name="${esc(a.name)}">Remove</button>`)}</li>`).join('')}</ul>` : ''}`;
+  const sortSel = `<details class="menu inline"><summary aria-label="Sort series">${esc(FOLLOW_SORTS.find(([k]) => k === sort)?.[1] ?? 'Sort')} ▾</summary><div class="menu-items">
+    ${FOLLOW_SORTS.map(([k, v]) => `<button data-click="follow-sort" data-value="${k}" aria-pressed="${sort === k}">${sort === k ? '✓ ' : ''}${v}</button>`).join('')}
+    ${hasToken && rows.length ? '<button data-click="sync-hc">Sync progress from Hardcover</button>' : ''}</div></details>`;
+  return `<div class="pagehead"><h1>Following</h1>${rows.length ? sortSel : ''}</div>
+    ${authors.length ? `${secHead(`Authors · ${authors.length}`, '')}<ul class="shelf authors">${authors.map((a) => shelfItem({ href: `#/author/${a.hardcover_author_id}`, ck: null, fb: a.cover_url,
+      title: a.name, seed: a.name, author: a.name, line2: a.muted ? 'Muted' : '' })).join('')}</ul>` : ''}
+    ${rows.length ? `${authors.length ? secHead(`Series · ${rows.length}`, '') : ''}<div class="filters" role="group" aria-label="Filter series">${FILTERS.filter(([k]) => k === 'all' || counts[k])
+      .map(([k, v]) => `<button class="filter" data-click="follow-filter" data-value="${k}" aria-pressed="${filter === k}">${v} <span>${counts[k]}</span></button>`).join('')}</div>
+      ${shown.length ? `<ul class="cards">${shown.map((r) => seriesCard(r.s, r.read, r.next, r.prog)).join('')}</ul>` : '<p class="meta">Nothing here.</p>'}`
+      : `<p>Nothing followed yet.</p><p><a class="btn" href="#/more/data">Import your reading history</a> or <a href="#/search">search for a series</a>.</p>`}`;
 }
 
 async function viewSeries(id) {
@@ -134,13 +151,15 @@ async function viewSeries(id) {
   if (!s) return '<p>No such series. <a href="#/following">Back</a></p>';
   const read = await maxRead(store, s.id), today = todayIso();
   const books = (await store.all('series_book')).filter((r) => r.series_id === s.id).sort((a, b) => a.position - b.position);
+  const authorFollowed = s.author && (await store.all('author')).some((x) => x.name.toLowerCase() === s.author.toLowerCase());
   return `<p><a class="back" href="#/following">← Following</a></p>
     <div class="hero">
       ${img(s.cover_key ?? `series-${s.id}`, s.cover_key ? '' : s.cover_url, s.name, s.name, 'cover big', s.author)}
       <div class="body"><h1>${esc(s.name)}${s.muted ? ' <span class="badge">Muted</span>' : ''}</h1>
-        <p class="meta">${esc(s.author ?? 'Unknown author')}${s.author ? ` · <a href="#/search?q=${encodeURIComponent(s.author)}">follow author</a>` : ''}${s.complete ? ' · complete' : ''}</p>
+        <p class="meta">${esc(s.author ?? 'Unknown author')}</p>
+        <p class="meta">${books.filter((b) => Number.isInteger(b.position)).length} books · ${s.complete ? 'complete' : 'ongoing'} · ${s.last_checked_at ? 'checked ' + esc(ago(s.last_checked_at)) : 'not checked yet'}</p>
         ${progressHtml(progress(books, read))}
-        <p class="meta">${s.last_checked_at ? 'Checked ' + esc(s.last_checked_at.slice(0, 10)) : 'Not checked yet'}</p></div></div>
+        ${s.author && !authorFollowed ? `<p><a class="btn small" href="#/search?q=${encodeURIComponent(s.author)}">+ Follow ${esc(s.author)}</a></p>` : ''}</div></div>
     <div class="actions"><button class="primary" data-click="read-all" data-id="${s.id}">Mark all released as read</button>
       ${menu(s.name, `<button data-click="mute" data-id="${s.id}">${s.muted ? 'Unmute' : 'Mute'}</button>
         ${read ? `<button data-click="read-none" data-id="${s.id}">Reset progress</button>` : ''}
@@ -149,13 +168,16 @@ async function viewSeries(id) {
       const done = isRead(b, read), w = when(b.release_date, today);
       const unreleased = w.tone !== 'ok';
       const earlierUnread = books.some((x) => x.position < b.position && !isRead(x, read));
-      const btn = done ? `<button class="small" data-click="toggle-read" data-id="${s.id}" data-pos="${b.position}">Unread</button>`
-        : unreleased ? notifyBtn(s.id, b, read)
-        : `<button class="small primary" data-click="toggle-read" data-id="${s.id}" data-pos="${b.position}">Mark read</button>${earlierUnread ? `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read to here</button>` : ''}`;
-      return `<li class="${done ? 'read' : ''}">
+      const on = notifying(b, read);
+      const btn = unreleased && !done
+        ? `<button class="tick bell" aria-pressed="${on}" data-click="notify" data-id="${s.id}" data-pos="${b.position}" aria-label="${on ? 'Notifying' : 'Notify me'} about ${esc(b.title)}" title="${on ? 'Notifying' : 'Notify me'}">🔔</button>`
+        : `<button class="tick" aria-pressed="${done}" data-click="toggle-read" data-id="${s.id}" data-pos="${b.position}" aria-label="${done ? 'Mark unread' : 'Mark read'}: ${esc(b.title)}">✓</button>`;
+      const rowMenu = !done && !unreleased && earlierUnread ? `<details class="menu row"><summary aria-label="More for ${esc(b.title)}">⋯</summary><div class="menu-items">
+        <button data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read everything up to here</button></div></details>` : '';
+      return `<li class="${done ? 'read' : ''}" data-swipe="toggle-read" data-id="${s.id}" data-pos="${b.position}">
         ${img(b.cover_key ?? `sb-${s.id}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover small', s.author)}
         <div class="grow"><a class="booklink" href="#/book/${s.id}/${b.position}"><span class="num">#${pos(b.position)}</span> ${esc(b.title)}</a><br>
-          ${done ? '<span class="chip read">✓ Read</span>' : chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></div><div class="row-btns">${btn}</div></li>`;
+          ${done ? '<span class="chip read">✓ Read</span>' : chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></div>${rowMenu}${btn}</li>`;
     }).join('')}</ul>` : '<p>No books fetched yet. Use “Check now” in More.</p>'}`;
 }
 
@@ -170,6 +192,9 @@ async function viewBook(sid, position) {
   const btn = done ? `<button data-click="toggle-read" data-id="${sid}" data-pos="${b.position}">Mark unread</button>`
     : w.tone !== 'ok' ? notifyBtn(sid, b, read)
     : `<button class="primary" data-click="toggle-read" data-id="${sid}" data-pos="${b.position}">Mark read</button>${earlierUnread ? `<button data-click="read-to" data-id="${sid}" data-pos="${b.position}">Read up to here</button>` : ''}`;
+  const sorted = all.sort((x, y) => x.position - y.position), i = sorted.findIndex((x) => x.position === b.position);
+  const prev = sorted[i - 1], next = sorted[i + 1];
+  const authorFollowed = s.author && (await store.all('author')).some((x) => x.name.toLowerCase() === s.author.toLowerCase());
   const getIt = done ? '' : `<a class="btn" target="_blank" rel="noopener" href="${esc(storeLink(shop, b.title, s.author ?? ''))}">${w.tone === 'ok' ? 'Get it' : 'Pre-order'} · ${STORES[shop] ?? 'Hardcover'} ↗</a>`;
   afterRender = async () => {
     const box = document.getElementById('book-more');
@@ -181,16 +206,47 @@ async function viewBook(sid, position) {
         d.description ? `<p class="desc">${esc(d.description).replace(/\n+/g, '</p><p class="desc">')}</p>` : '<p class="meta">No description on Hardcover.</p>'];
       box.innerHTML = bits.join('');
     } catch (e) { box.innerHTML = `<p class="meta">Details unavailable: ${esc(msg(e))}</p>`; }
+    await similarShelf(b.hardcover_book_id);
   };
-  return `<p><a class="back" href="#/series/${sid}">← ${esc(s.name)}</a></p>
+  return `<div class="bookbar"><a class="back" href="#/series/${sid}">← ${esc(s.name)}</a><span class="pn">
+      ${prev ? `<a class="btn small" href="#/book/${sid}/${prev.position}" aria-label="Previous: ${esc(prev.title)}">‹ #${pos(prev.position)}</a>` : ''}
+      ${next ? `<a class="btn small" href="#/book/${sid}/${next.position}" aria-label="Next: ${esc(next.title)}">#${pos(next.position)} ›</a>` : ''}</span></div>
     <div class="hero">
       ${img(b.cover_key ?? `sb-${sid}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover big', s.author)}
       <div class="body"><h1>${esc(b.title)}</h1>
-        <p class="meta">${esc(s.author ?? 'Unknown author')}${s.author ? ` · <a href="#/search?q=${encodeURIComponent(s.author)}">follow author</a>` : ''}</p>
-        <p class="meta">${esc(s.name)} · #${pos(b.position)}</p>
+        <p class="meta">${esc(s.author ?? 'Unknown author')}</p>
+        <p class="meta">${esc(s.name)} · #${pos(b.position)} of ${sorted.filter((x) => Number.isInteger(x.position)).length}</p>
         <p>${done ? '<span class="chip read">✓ Read</span> ' : ''}${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></p></div></div>
     ${btn || getIt ? `<div class="actions">${btn}${getIt}</div>` : ''}
-    <div id="book-more"><p class="meta">Loading details…</p></div>`;
+    ${s.author && !authorFollowed ? `<p><a class="btn small" href="#/search?q=${encodeURIComponent(s.author)}">+ Follow ${esc(s.author)}</a></p>` : ''}
+    <div id="book-more"><p class="meta">Loading details…</p></div>
+    <div id="similar"></div>`;
+}
+
+// "Similar books" shelf (Hardcover's own similar-books list), filled in after the page shows.
+async function similarShelf(bookId) {
+  const box = document.getElementById('similar');
+  if (!box || !bookId || !(await getSetting(store, 'hc_token', ''))) return;
+  try {
+    const ids = (await client.similarBookIds([bookId])).get(Number(bookId)) ?? [];
+    if (!ids.length) return;
+    const mine = new Map((await store.all('series')).map((s) => [s.hardcover_series_id, s]));
+    const seen = new Set(), items = [];
+    const info = new Map((await client.booksInfo(ids.slice(0, 20))).map((x) => [x.hardcover_book_id, x]));
+    for (const id of ids.slice(0, 20)) {
+      const x = info.get(id);
+      if (!x?.series || seen.has(x.series.hardcover_series_id)) continue;
+      seen.add(x.series.hardcover_series_id);
+      const own = mine.get(x.series.hardcover_series_id);
+      const q = new URLSearchParams({ n: x.series.name, a: x.series.author ?? '', c: x.cover_url ?? '', w: `Similar to ${document.querySelector('h1')?.textContent ?? 'this book'}` });
+      items.push(shelfItem({ href: own ? `#/series/${own.id}` : `#/rec/${x.series.hardcover_series_id}?${q}`, ck: null, fb: x.cover_url, title: x.title, seed: x.series.name,
+        author: x.series.author, line2: own ? 'Following' : esc(x.series.author ?? x.series.name) }));
+      if (items.length >= 12) break;
+    }
+    if (!items.length || !document.body.contains(box)) return;
+    box.innerHTML = `${secHead('Similar books', '')}<ul class="shelf">${items.join('')}</ul>`;
+    hydrateCovers(box);
+  } catch { /* the shelf is optional */ }
 }
 
 async function viewAuthorBook(aid, bid) {
@@ -206,6 +262,7 @@ async function viewAuthorBook(aid, bid) {
       box.innerHTML = [d.pages ? `<p class="meta">${d.pages} pages</p>` : '',
         d.description ? `<p class="desc">${esc(d.description).replace(/\n+/g, '</p><p class="desc">')}</p>` : '<p class="meta">No description on Hardcover.</p>'].join('');
     } catch (e) { box.innerHTML = `<p class="meta">Details unavailable: ${esc(msg(e))}</p>`; }
+    await similarShelf(bid);
   };
   return `<p><a class="back" href="#/author/${aid}">← ${esc(a.name)}</a></p>
     <div class="hero">${img(null, b.cover_url, b.title, a.name, 'cover big', a.name)}
@@ -213,12 +270,16 @@ async function viewAuthorBook(aid, bid) {
         <p class="meta">${esc(a.name)}</p>
         ${b.series_name ? `<p class="meta">${esc(b.series_name)}${b.series_position != null ? ` · #${pos(b.series_position)}` : ''}</p>` : ''}
         <p>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></p></div></div>
-    <div id="book-more"><p class="meta">Loading details…</p></div>`;
+    <div id="book-more"><p class="meta">Loading details…</p></div><div id="similar"></div>`;
 }
 
-async function viewRec(id) {
+async function viewRec(id, params = new URLSearchParams()) {
   id = Number(id);
-  const rec = await getSetting(store, 'recs', null), r = rec?.items.find((i) => i.hardcover_series_id === id);
+  const own = (await store.all('series')).find((s) => s.hardcover_series_id === id);
+  if (own) { location.replace(`#/series/${own.id}`); return ''; }
+  const rec = await getSetting(store, 'recs', null);
+  const r = rec?.items.find((i) => i.hardcover_series_id === id)
+    ?? (params.get('n') ? { hardcover_series_id: id, name: params.get('n'), author: params.get('a') || null, cover_url: params.get('c') || null, why: params.get('w') || 'Similar book', kind: 'similar' } : null);
   if (!r) return '<p>Suggestion no longer available. <a href="#/">Back</a></p>';
   const today = todayIso();
   afterRender = async () => {
@@ -233,7 +294,7 @@ async function viewRec(id) {
           return `<li>${img(null, b.cover_url, b.title, r.name, 'cover small')}<div class="grow"><strong><span class="num">#${pos(b.position)}</span> ${esc(b.title)}</strong><br>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date, today))}</span></div></li>`; }).join('')}</ul>` : '<p class="meta">No books listed on Hardcover.</p>'}`;
     } catch (e) { box.innerHTML = `<p class="meta">Details unavailable: ${esc(msg(e))}</p>`; }
   };
-  return `<p><a class="back" href="#/">← Home</a></p>
+  return `<p><a class="back" href="#/" data-click="back">← Back</a></p>
     <div class="hero">${img(null, r.cover_url, r.name, r.name, 'cover big')}
       <div class="body"><h1>${esc(r.name)}</h1><p class="meta">${esc(r.author ?? 'Unknown author')}</p>
         <p><span class="chip ${r.kind === 'author' ? 'near' : ''}">${esc(r.why)}</span></p></div></div>
@@ -276,7 +337,7 @@ async function viewAuthor(id) {
   return `<p><a class="back" href="#/following">← Following</a></p>
     <div class="hero">${img(null, a.cover_url, a.name, a.name, 'cover big')}
       <div class="body"><h1>${esc(a.name)}${a.muted ? ' <span class="badge">Muted</span>' : ''}</h1>
-        <p class="meta">${books.length ? `${list.length} series · ${stand.length} standalone` : 'No books listed'} · ${a.last_checked_at ? 'checked ' + esc(a.last_checked_at.slice(0, 10)) : 'not checked yet'}</p></div></div>
+        <p class="meta">${books.length ? `${list.length} series · ${stand.length} standalone` : 'No books listed'} · ${a.last_checked_at ? 'checked ' + esc(ago(a.last_checked_at)) : 'not checked yet'}</p></div></div>
     <div class="actions">${menu(a.name, `<button data-click="mute-author" data-id="${a.hardcover_author_id}">${a.muted ? 'Unmute' : 'Mute'}</button>
       <button class="danger" data-click="remove-author" data-id="${a.hardcover_author_id}" data-name="${esc(a.name)}">Remove</button>`)}</div>
     ${list.map(section).join('')}
@@ -293,10 +354,9 @@ function resultsHtml(r, followed, followedAuthors = new Set()) {
         <input type="hidden" name="hardcover_series_id" value="${s.hardcover_series_id}"><input type="hidden" name="name" value="${esc(s.name)}">
         <input type="hidden" name="author" value="${esc(s.author ?? '')}"><input type="hidden" name="cover_url" value="${esc(s.cover_url ?? '')}">
         <input type="hidden" name="complete" value="${s.complete ? 1 : ''}">
-        <label>I've read up to book <input type="number" name="read_up_to" min="0" value="0" inputmode="numeric"></label>
         <button class="primary">Follow</button></form>`}</div></li>`).join('');
   const bCards = r.books.map((b) => `<li class="card">${img(null, b.cover_url, b.title, b.title)}<div><h3>${esc(b.title)}</h3>
-      <p class="meta">${esc(b.author ?? 'Unknown author')}${b.release_date ? ' · ' + esc(b.release_date) : ''}</p>
+      <p class="meta">${esc(b.author ?? 'Unknown author')}${b.release_date ? ' · ' + esc(fmtDate(b.release_date)) : ''}</p>
       <form class="inline" data-form="add-book">
         <input type="hidden" name="hardcover_book_id" value="${b.hardcover_book_id}"><input type="hidden" name="title" value="${esc(b.title)}">
         <input type="hidden" name="author" value="${esc(b.author ?? '')}"><input type="hidden" name="cover_url" value="${esc(b.cover_url ?? '')}">
@@ -307,9 +367,13 @@ function resultsHtml(r, followed, followedAuthors = new Set()) {
       <form class="inline" data-form="follow-author">
         <input type="hidden" name="hardcover_author_id" value="${a.hardcover_author_id}"><input type="hidden" name="name" value="${esc(a.name)}">
         <input type="hidden" name="cover_url" value="${esc(a.cover_url ?? '')}"><button class="primary">Follow author</button></form>`}</div></li>`).join('');
-  return `${aCards ? `<h2>Authors</h2><ul class="cards">${aCards}</ul>` : ''}<h2>Series</h2>${r.series.length ? `<ul class="cards">${sCards}</ul>` : '<p>No series found.</p>'}
-    <h2>Books</h2>${r.books.length ? `<ul class="cards">${bCards}</ul>` : '<p>No books found.</p>'}
-    <p>Can't find it? <a href="#/manual">Add it by hand</a>.</p>`;
+  const tabs = [['series', 'Series', r.series.length, sCards, 'No series found.'], ['authors', 'Authors', (r.authors ?? []).length, aCards, 'No authors found.'],
+    ['books', 'Books', r.books.length, bCards, 'No books found.']];
+  const first = (tabs.find((t) => t[2]) ?? tabs[0])[0];
+  return `<div class="filters" role="tablist" aria-label="Result type">${tabs.map(([k, label, n]) =>
+      `<button class="filter" role="tab" data-click="search-tab" data-value="${k}" aria-selected="${k === first}" aria-pressed="${k === first}">${label} <span>${n}</span></button>`).join('')}</div>
+    ${tabs.map(([k, , n, html, none]) => `<div class="tabpanel" data-panel="${k}" role="tabpanel" ${k === first ? '' : 'hidden'}>${n ? `<ul class="cards">${html}</ul>` : `<p class="meta">${none}</p>`}</div>`).join('')}
+    <p class="meta">Can't find it? <a href="#/manual">Add it by hand</a>.</p>`;
 }
 
 async function runSearch(q) {
@@ -336,10 +400,10 @@ async function viewSearch(params) {
     input.addEventListener('input', () => { clearTimeout(t); if (input.value.trim().length < 3) return; t = setTimeout(() => runSearch(input.value), 1000); });
     if (q) runSearch(q);
   };
-  return `<h1>Search</h1>
+  return `<div class="pagehead"><h1>Search</h1></div>
     <form role="search" class="inline" data-form="search"><label class="sr" for="q">Title, author, series or ISBN</label>
       <input id="q" type="search" name="q" value="${esc(q)}" placeholder="Title, author, series or ISBN" enterkeyhint="search" autocomplete="off">
-      <button class="primary">Search</button></form>
+      <button class="sr">Search</button></form>
     <div id="results" aria-live="polite"></div>`;
 }
 
@@ -453,7 +517,7 @@ async function viewHome() {
     };
   }
   if (!nSeries && !nAuthors) return `<div class="pagehead"><h1>Home</h1></div>
-    <section class="panel"><h2>Welcome</h2><p>Follow the series and authors you read and this page shows what is coming out.</p><p><a class="btn" href="#/search">Search</a> <a class="btn" href="#/more">Import your reading history</a></p></section>`;
+    <section class="panel"><h2>Welcome</h2><p>Follow the series and authors you read and this page shows what is coming out.</p><p><a class="btn" href="#/search">Search</a> <a class="btn" href="#/more/data">Import your reading history</a></p></section>`;
   const hero = soon[0], hw = hero && when(hero.date, today);
   const later = soon.slice(hero ? 1 : 0);
   return `<div class="pagehead"><h1>Home</h1></div>
@@ -488,22 +552,32 @@ async function viewUpdates() {
   const list = (await updates(store)).sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? '')).slice(0, 100);
   const unseen = list.filter((n) => !n.seen_at).length;
   const tone = { announced: 'near', date_changed: 'warn', released: 'ok' };
-  const readOf = new Map();
+  const readOf = new Map(), rows = new Map((await store.all('series_book')).map((r) => [r.key, r]));
+  const abooks = new Set((await store.all('author_book')).map((r) => r.key));
   for (const n of list) if (n.series_id != null && !readOf.has(n.series_id)) readOf.set(n.series_id, await maxRead(store, n.series_id));
-  return `<div class="pagehead"><h1>Updates</h1><span class="head-actions">
-      ${unseen ? '<button class="small" data-click="mark-seen">Mark all seen</button>' : ''}
-      ${list.length ? '<button class="small" data-click="dismiss-all">Clear all</button>' : ''}</span></div>
-    ${list.length ? `<ul class="cards">${list.map((n) => { const w = when(n.release_date);
-      const canRead = n.kind === 'released' && n.series_id != null && n.position != null && n.position > readOf.get(n.series_id);
-      return `<li class="card has-actions ${n.seen_at ? '' : 'unseen'}">
-        <a class="cardlink" href="#/${n.author_id != null ? 'author/' + n.author_id : 'series/' + n.series_id}">
-        ${img(n.author_id != null ? null : (n.cover_key ?? `sb-${n.series_id}-${n.position}`), n.author_id != null ? n.cover_url : null, n.title ?? '', n.series_name)}
-        <div class="body"><p><span class="chip ${tone[n.kind]}">${LABEL[n.kind]}</span></p>
-        <h2>${n.position != null ? '#' + pos(n.position) + ' ' : ''}${esc(n.title)}</h2>
-        <p class="meta">${esc(n.series_name)}${n.author_id != null ? ' · author' : ''}</p>
-        <p class="meta">${n.kind === 'date_changed' ? `${esc(fmtDate(n.detail))} → ${esc(fmtDate(n.release_date))}` : `${esc(fmtDate(n.release_date))}${w.tone === 'tba' ? '' : ' · ' + esc(w.text)}`}</p></div></a>
-        <div class="card-actions">${canRead ? `<button class="small" data-click="read-to" data-id="${n.series_id}" data-pos="${n.position}" data-dismiss="${esc(n.key)}">Mark read</button>` : ''}
-          <button class="small" data-click="dismiss-update" data-key="${esc(n.key)}">Dismiss</button></div></li>`; }).join('')}</ul>`
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  const groupOf = (n) => { const t = Date.parse(n.created_at ?? ''); return Number.isNaN(t) ? 'Earlier' : t >= start ? 'Today' : t >= start - 6 * 864e5 ? 'This week' : 'Earlier'; };
+  const groups = [];
+  for (const n of list) { const g = groupOf(n); (groups.find((x) => x.label === g) ?? groups[groups.push({ label: g, items: [] }) - 1]).items.push(n); }
+  const card = (n) => {
+    const w = when(n.release_date), row = n.series_id != null && n.position != null ? rows.get(sbKey(n.series_id, n.position)) : null;
+    const canRead = n.kind === 'released' && row && !isRead(row, readOf.get(n.series_id));
+    const href = row ? `#/book/${n.series_id}/${n.position}` : n.author_id != null
+      ? (abooks.has(`${n.author_id}:${n.hardcover_book_id}`) ? `#/abook/${n.author_id}/${n.hardcover_book_id}` : `#/author/${n.author_id}`) : `#/series/${n.series_id}`;
+    return `<li class="card ${canRead ? 'has-actions' : ''} ${n.seen_at ? '' : 'unseen'}" data-swipe="dismiss-update" data-key="${esc(n.key)}">
+      <a class="cardlink" href="${href}">
+      ${img(n.author_id != null ? null : (n.cover_key ?? `sb-${n.series_id}-${n.position}`), n.author_id != null ? n.cover_url : null, n.title ?? '', n.series_name)}
+      <div class="body"><p><span class="chip ${tone[n.kind]}">${LABEL[n.kind]}</span>${n.seen_at ? '' : ' <span class="dot" aria-label="new"></span>'}</p>
+      <h2>${n.position != null ? '#' + pos(n.position) + ' ' : ''}${esc(n.title)}</h2>
+      <p class="meta">${esc(n.series_name)}${n.author_id != null ? ' · author' : ''}</p>
+      <p class="meta">${n.kind === 'date_changed' ? `${esc(fmtDate(n.detail))} → ${esc(fmtDate(n.release_date))}` : `${esc(fmtDate(n.release_date))}${w.tone === 'tba' ? '' : ' · ' + esc(w.text)}`}</p>
+</div></a>
+      ${canRead ? `<div class="card-actions"><button class="small primary" data-click="toggle-read" data-id="${n.series_id}" data-pos="${n.position}" data-dismiss="${esc(n.key)}">Mark read</button></div>` : ''}
+      <button class="card-x" data-click="dismiss-update" data-key="${esc(n.key)}" aria-label="Dismiss">✕</button></li>`;
+  };
+  return `<div class="pagehead"><h1>Updates</h1>${list.length ? `<details class="menu inline"><summary aria-label="Update actions">⋯</summary><div class="menu-items">
+      ${unseen ? '<button data-click="mark-seen">Mark all seen</button>' : ''}<button data-click="dismiss-all">Clear all</button></div></details>` : ''}</div>
+    ${list.length ? `<p class="meta swipe-hint">Swipe an update sideways to dismiss it.</p>${groups.map((g) => `${secHead(g.label, '')}<ul class="cards">${g.items.map(card).join('')}</ul>`).join('')}`
       : '<p>Nothing yet. New announcements, date changes and releases for series and authors you follow show up here after a check.</p>'}`;
 }
 
@@ -538,54 +612,133 @@ async function viewReview(params) {
       <p><button data-click="ignore" data-id="${g.lead.id}">Ignore</button></p></section>`).join('')}`;
 }
 
-async function viewMore() {
+const MORE = [['appearance', 'Appearance', 'Theme and where “Get it” links go'], ['account', 'Hardcover account', 'Your API token'],
+  ['data', 'Your data', 'Import, backup and restore, books to review'], ['stats', 'Reading stats', 'Books and pages read, series finished'],
+  ['calendar', 'Release calendar', 'Add upcoming releases to your calendar'], ['advanced', 'Checking & advanced', 'Check now, background alerts, verify Hardcover']];
+async function viewMore(sub) {
   const backupDue = (await store.all('series')).length + (await store.all('author')).length > 0
     && (Date.now() - Date.parse((await getSetting(store, 'last_backup', null)) ?? (await getSetting(store, 'first_seen', nowIso())))) > 30 * 864e5;
-  const shopPref = await getSetting(store, 'store', 'hardcover');
   const hasToken = Boolean(await getSetting(store, 'hc_token', ''));
-  const last = await getSetting(store, 'last_check', null);
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
-  const canNotify = 'Notification' in window && 'serviceWorker' in navigator;
-  return `<h1>More</h1>
-    <section class="panel"><h2>Theme</h2><div class="seg" role="group" aria-label="Theme">
+  if (sub === 'stats') return viewStats();
+  if (sub === 'calendar') return viewCalendar();
+  const page = MORE.find(([k]) => k === sub);
+  if (!page) return `<div class="pagehead"><h1>More</h1></div>
+    <ul class="menu-list">${MORE.map(([k, t, d]) => `<li><a href="#/more/${k}"><span><strong>${t}</strong><span class="meta">${d}</span></span>
+      ${(k === 'data' && backupDue) || (k === 'account' && !hasToken) ? '<span class="dot" aria-label="needs attention"></span>' : ''}<span class="chev" aria-hidden="true">›</span></a></li>`).join('')}</ul>
+    ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
+      ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}
+    <p class="meta center">Series Tracker · v12</p>`;
+  const head = `<p><a class="back" href="#/more">← More</a></p><div class="pagehead"><h1>${page[1]}</h1></div>`;
+  if (sub === 'appearance') {
+    const shopPref = await getSetting(store, 'store', 'hardcover');
+    return `${head}<section class="panel"><h2>Theme</h2><div class="seg" role="group" aria-label="Theme">
       ${THEMES.map((t) => `<button data-click="theme" data-value="${t}" aria-pressed="${theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></section>
-
     <section class="panel"><h2>Where to get books</h2><div class="seg" role="group" aria-label="Store">
       ${Object.entries(STORES).map(([k, v]) => `<button data-click="set-store" data-value="${k}" aria-pressed="${shopPref === k}">${v}</button>`).join('')}</div>
-      <p class="meta">“Get it” and “Pre-order” links on book pages and Home open a search here.</p></section>
-    <section class="panel"><h2>Hardcover token</h2>
+      <p class="meta">“Get it” and “Pre-order” links on book pages and Home open a search here.</p></section>`;
+  }
+  if (sub === 'account') return `${head}<section class="panel">
       <p class="meta">${hasToken ? 'A token is saved on this phone.' : 'Needed for matching, search and checks.'} It is stored only on this device and sent only to Hardcover. Tokens expire; paste a new one if you see “rejected”.</p>
       <form class="stack" data-form="token"><label>API token <input type="password" name="token" autocomplete="off" placeholder="${hasToken ? '•••••••• (saved)' : 'paste token'}"></label>
-        <div class="inline"><button class="primary">Save token</button>${hasToken ? '<button type="button" class="danger" data-click="remove-token">Remove</button>' : ''}</div></form></section>
-
-    <section class="panel"><h2>Import</h2>
+        <div class="inline"><button class="primary">Save token</button>${hasToken ? '<button type="button" class="danger" data-click="remove-token">Remove</button>' : ''}</div></form></section>`;
+  if (sub === 'data') {
+    const lastBackup = await getSetting(store, 'last_backup', null);
+    return `${head}<section class="panel"><h2>Import</h2>
       <form class="stack" data-form="import-gr"><label>Goodreads export (goodreads_library_export.csv)<input type="file" name="file" accept=".csv,text/csv"></label>
         <button class="primary">Import Goodreads CSV</button></form>
       <p><button data-click="import-hc">Import from Hardcover</button></p>
       <p class="meta">Imports can take a few minutes: Hardcover allows 60 requests a minute.</p></section>
-
-    <section class="panel"><h2>Checking</h2>
-      <p class="meta">${last ? 'Last checked ' + esc(last) : 'Not checked yet'}. The app checks when you open it (at most every 12 hours).</p>
+    <section class="panel"><h2>Backup</h2>
+      <p class="meta">Your data lives only on this phone. Export a backup now and then (it does not include your token).</p>
+      ${backupDue ? '<p class="flash">It has been over a month since your last backup.</p>' : ''}
+      <p class="meta">Last backup: ${esc(ago(lastBackup))} · Storage: ${(await navigator.storage?.persisted?.()) ? 'protected from automatic clearing' : 'not guaranteed (the browser may clear it if space runs low)'}</p>
+      <p><button class="${backupDue ? 'primary' : ''}" data-click="export">Export backup</button></p>
+      <form class="stack" data-form="restore"><label>Restore from backup<input type="file" name="file" accept=".json,application/json"></label><button>Restore</button></form></section>
+    <section class="panel"><h2>Books to sort out</h2><p><a href="#/review">Needs review</a> · <a href="#/manual">Add a book by hand</a></p></section>`;
+  }
+  const last = await getSetting(store, 'last_check', null);
+  const canNotify = 'Notification' in window && 'serviceWorker' in navigator;
+  return `${head}<section class="panel"><h2>Checking</h2>
+      <p class="meta">${last ? 'Last checked ' + esc(ago(last)) : 'Not checked yet'}. The app checks when you open it (at most every 12 hours).</p>
       <p><button class="primary" data-click="check-now">Check now</button></p>
       ${canNotify ? `<p><button data-click="enable-alerts">Enable background alerts</button></p>
         <p class="meta">Android Chrome only, and only for the installed app; the browser decides when it runs. iPhone can't do this — open the app to check.</p>` : ''}</section>
-
-    <section class="panel"><h2>Needs review &amp; manual</h2><p><a href="#/review">Needs review</a> · <a href="#/manual">Add a book by hand</a></p></section>
-
-    <section class="panel"><h2>Backup</h2>
-      <p class="meta">Your data lives only on this phone. Export a backup now and then (it does not include your token).</p>
-      ${backupDue ? '<p class="flash">It has been over a month since your last backup. <button class="small" data-click="export">Back up now</button></p>' : ''}
-      <p class="meta">Last backup: ${esc((await getSetting(store, 'last_backup', null))?.slice(0, 10) ?? 'never')} · Storage: ${(await navigator.storage?.persisted?.()) ? 'protected from automatic clearing' : 'not guaranteed (the browser may clear it if space runs low)'}</p>
-      <p><button data-click="export">Export backup</button></p>
-      <form class="stack" data-form="restore"><label>Restore from backup<input type="file" name="file" accept=".json,application/json"></label><button>Restore</button></form></section>
-
     <section class="panel"><h2>Hardcover fields</h2>
       <p class="meta">The app's Hardcover queries were written from the public docs. This compares them with the live schema.</p>
-      <p><button data-click="verify">Verify Hardcover fields</button></p><pre class="out" id="verify-out"></pre>
-      <p class="meta">App version: new Home layout (v11)</p></section>
+      <p><button data-click="verify">Verify Hardcover fields</button></p><pre class="out" id="verify-out"></pre></section>`;
+}
 
-    ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
-      ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}`;
+// ---- stats & calendar ------------------------------------------------------------------------
+async function viewStats() {
+  const today = todayIso(), sbs = await store.all('series_book'), series = await store.all('series');
+  const readRows = [];
+  const states = { reading: 0, waiting: 0, finished: 0, unstarted: 0, muted: 0 };
+  for (const s of series) {
+    const read = await maxRead(store, s.id), mine = sbs.filter((r) => r.series_id === s.id);
+    for (const r of mine) if (isRead(r, read)) readRows.push({ ...r, author: s.author });
+    states[seriesState(s, mine, read, today)]++;
+  }
+  const extra = (await store.all('author_book')).filter((r) => r.read);
+  const byAuthor = new Map();
+  for (const r of readRows) if (r.author) byAuthor.set(r.author, (byAuthor.get(r.author) ?? 0) + 1);
+  const topAuthors = [...byAuthor.entries()].sort((x, y) => y[1] - x[1]).slice(0, 6), maxA = topAuthors[0]?.[1] ?? 1;
+  const byYear = new Map();
+  for (const r of [...readRows, ...extra]) if (r.read_at) byYear.set(r.read_at.slice(0, 4), (byYear.get(r.read_at.slice(0, 4)) ?? 0) + 1);
+  const pagesCache = await getSetting(store, 'pages_cache', {});
+  const ids = [...new Set(readRows.map((r) => r.hardcover_book_id).filter(Boolean))];
+  const missing = ids.filter((i) => !(i in pagesCache));
+  const pages = ids.reduce((n, i) => n + (pagesCache[i] || 0), 0), known = ids.filter((i) => pagesCache[i]).length;
+  if (missing.length && await getSetting(store, 'hc_token', '')) afterRender = async () => {     // look up page counts once, 60 books per request
+    const cache = { ...pagesCache };
+    try { for (let i = 0; i < missing.length; i += 60) { const got = await client.booksInfo(missing.slice(i, i + 60));
+      for (const id of missing.slice(i, i + 60)) cache[id] = got.find((g) => g.hardcover_book_id === id)?.pages ?? 0; } } catch { /* partial is fine */ }
+    await setSetting(store, 'pages_cache', cache);
+    if (location.hash === '#/more/stats') await route();
+  };
+  const next12 = sbs.filter((r) => r.release_date && r.release_date.slice(0, 10) > today && r.release_date.slice(0, 10) <= `${+today.slice(0, 4) + 1}${today.slice(4)}`).length;
+  const tile = (n, label) => `<div class="tile"><strong>${n.toLocaleString()}</strong><span>${label}</span></div>`;
+  return `<p><a class="back" href="#/more">← More</a></p><div class="pagehead"><h1>Reading stats</h1></div>
+    <div class="tiles">${tile(readRows.length + extra.length, 'books read')}${tile(pages, missing.length ? 'pages read (counting…)' : `pages read${known < ids.length ? '*' : ''}`)}
+      ${tile(states.finished, 'series finished')}${tile(states.reading, 'series in progress')}${tile(states.waiting, 'waiting for the next book')}${tile(next12, 'releases in the next 12 months')}</div>
+    ${known < ids.length && !missing.length ? `<p class="meta">* ${ids.length - known} books have no page count on Hardcover.</p>` : ''}
+    ${topAuthors.length ? `${secHead('Most-read authors', '')}<ul class="bars">${topAuthors.map(([n, c]) => `<li><span class="bl">${esc(n)}</span><span class="bb"><i style="width:${Math.round(100 * c / maxA)}%"></i></span><span class="bn">${c}</span></li>`).join('')}</ul>` : ''}
+    ${byYear.size ? `${secHead('Marked read, by year', '')}<ul class="bars">${[...byYear.entries()].sort().reverse().map(([y, c]) => `<li><span class="bl">${y}</span><span class="bb"><i style="width:${Math.round(100 * c / Math.max(...byYear.values()))}%"></i></span><span class="bn">${c}</span></li>`).join('')}</ul>
+      <p class="meta">Counts books from when you mark them read in this app; books imported from Goodreads or Hardcover have no date.</p>` : ''}`;
+}
+
+async function calendarItems(includeEstimated) {
+  const today = todayIso(), out = [];
+  const series = new Map((await store.all('series')).map((s) => [s.id, s]));
+  for (const r of await store.all('series_book')) {
+    const s = series.get(r.series_id);
+    if (!s || s.muted || !r.release_date || r.release_date.slice(0, 10) <= today) continue;
+    const est = isEstimated(r.release_date, today);
+    if (est && !includeEstimated) continue;
+    out.push({ uid: `s${s.hardcover_series_id}-${r.hardcover_book_id ?? r.position}`, date: r.release_date.slice(0, 10), estimated: est,
+      title: `${r.title} (${s.name} #${pos(r.position)})`, description: `${s.author ?? ''}${est ? '\nYear only: the exact date is not known yet.' : ''}` });
+  }
+  const authors = new Map((await store.all('author')).map((a) => [a.hardcover_author_id, a]));
+  const inSeries = new Set([...out.map((o) => o.uid)]);
+  for (const r of await store.all('author_book')) {
+    const a = authors.get(r.author_id);
+    if (!a || a.muted || r.dismissed || !r.release_date || r.release_date.slice(0, 10) <= today || (r.series_id && [...series.values()].some((s) => s.hardcover_series_id === r.series_id))) continue;
+    const est = isEstimated(r.release_date, today);
+    if (est && !includeEstimated) continue;
+    const uid = `a${r.author_id}-${r.hardcover_book_id}`;
+    if (!inSeries.has(uid)) out.push({ uid, date: r.release_date.slice(0, 10), estimated: est, title: `${r.title} (${a.name})`, description: a.name });
+  }
+  return out.sort((x, y) => x.date.localeCompare(y.date));
+}
+async function viewCalendar() {
+  const exact = await calendarItems(false), all = await calendarItems(true);
+  return `<p><a class="back" href="#/more">← More</a></p><div class="pagehead"><h1>Release calendar</h1></div>
+    <section class="panel"><p>${exact.length} upcoming release${exact.length === 1 ? '' : 's'} with an exact date${all.length > exact.length ? `, plus ${all.length - exact.length} with only a year` : ''}.</p>
+      <p><button class="primary" data-click="ics" data-est="">Download calendar file</button></p>
+      ${all.length > exact.length ? '<p><button data-click="ics" data-est="1">Include year-only estimates</button></p>' : ''}
+      <p class="meta">Open the downloaded <strong>.ics</strong> file and your calendar app adds all-day events. Download again after new announcements:
+        each book keeps the same ID, so most calendar apps update the event instead of adding a duplicate.</p></section>
+    ${exact.length ? `${secHead('Next up', '')}<ul class="rows">${exact.slice(0, 8).map((it) => `<li><div class="grow"><strong>${esc(it.title)}</strong><br><span class="meta">${esc(fmtDate(it.date))}</span></div></li>`).join('')}</ul>` : ''}`;
 }
 
 // ---- router -----------------------------------------------------------------------------------
@@ -596,8 +749,8 @@ async function route() {
   const tab = { '': 'home', upcoming: 'home', following: 'following', series: 'following', book: 'following', author: 'following', abook: 'following', rec: 'home', recs: 'home', continue: 'home', search: 'search', updates: 'updates' }[seg ?? ''] ?? 'more';
   let html;
   try {
-    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), abook: () => viewAuthorBook(arg, path.split('/')[3]), rec: () => viewRec(arg), recs: viewRecs, continue: viewContinue, upcoming: viewUpcoming, following: viewFollowing, search: () => viewSearch(params), updates: viewUpdates,
-      manual: viewManual, review: () => viewReview(params), more: viewMore }[seg ?? ''] ?? viewHome)();
+    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), abook: () => viewAuthorBook(arg, path.split('/')[3]), rec: () => viewRec(arg, params), recs: viewRecs, continue: viewContinue, upcoming: viewUpcoming, following: viewFollowing, search: () => viewSearch(params), updates: viewUpdates,
+      manual: viewManual, review: () => viewReview(params), more: () => viewMore(arg) }[seg ?? ''] ?? viewHome)();
   } catch (e) { html = `<p class="error">${esc(msg(e))}</p>`; }
   $app.innerHTML = html;
   const bind = afterRender; afterRender = null;
@@ -613,7 +766,7 @@ async function refreshBadge() {
 
 // ---- actions ----------------------------------------------------------------------------------
 const report = (r, what) => `${what}: ${r.books_imported} new books, ${r.series_followed} series matched, ${r.needs_review} to review.` + (r.errors.length ? ' Problem: ' + r.errors[0] : '');
-const needToken = async () => { if (await getSetting(store, 'hc_token', '')) return false; toast('Add your Hardcover token first (More → Hardcover token).', { error: true }); return true; };
+const needToken = async () => { if (await getSetting(store, 'hc_token', '')) return false; toast('Add your Hardcover token first (More → Hardcover account).', { error: true }); return true; };
 
 async function checkNow({ silent = false } = {}) {
   if (checking) return;
@@ -649,6 +802,20 @@ const clickActions = {
     const sid = await followSeries(store, client, { hardcover_series_id: Number(d.hc), name: d.name, author: d.author || null, cover_url: d.cover || null, complete: Boolean(d.complete) }, 0, covers);
     toast(`Following “${d.name}”. Use “Mark all released as read” on its page if you've read it.`); location.hash = `#/series/${sid}`;
   },
+  async 'search-tab'(el) {
+    for (const b of document.querySelectorAll('[data-click="search-tab"]')) { const on = b === el; b.setAttribute('aria-selected', on); b.setAttribute('aria-pressed', on); }
+    for (const p of document.querySelectorAll('.tabpanel')) p.hidden = p.dataset.panel !== el.dataset.value;
+  },
+  async ics(el) {
+    const items = await calendarItems(Boolean(el.dataset.est));
+    if (!items.length) return toast('No upcoming releases to export.', { error: true });
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([buildIcs(items)], { type: 'text/calendar' })), download: 'book-releases.ics' });
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast(`Calendar file with ${items.length} release${items.length > 1 ? 's' : ''} downloaded.`);
+  },
+  async back() { if (history.length > 1) history.back(); else location.hash = '#/'; },
+  async 'follow-sort'(el) { await setSetting(store, 'follow_sort', el.dataset.value); await route(); },
+  async 'follow-filter'(el) { await setSetting(store, 'follow_filter', el.dataset.value); await route(); },
   async 'recs-sort'(el) { await setSetting(store, 'recs_sort', el.dataset.value); await route(); },
   async 'rec-dismiss'(el) {
     await dismissRec(store, Number(el.dataset.hc));
@@ -814,6 +981,30 @@ async function guarded(btn, fn) {
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-click]');
   if (el) { e.preventDefault(); guarded(el, () => clickActions[el.dataset.click](el)); }
+});
+// Swipe a [data-swipe] row/card sideways (> 90 px, mostly horizontal) to run its action: mark read / dismiss.
+let swipe = null;
+document.addEventListener('touchstart', (e) => {
+  const el = e.target.closest('[data-swipe]');
+  if (!el || e.touches.length !== 1 || e.target.closest('button, details, input')) { swipe = null; return; }
+  swipe = { el, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, locked: null };
+}, { passive: true });
+document.addEventListener('touchmove', (e) => {
+  if (!swipe) return;
+  const dx = e.touches[0].clientX - swipe.x, dy = e.touches[0].clientY - swipe.y;
+  if (swipe.locked === null && Math.hypot(dx, dy) > 10) swipe.locked = Math.abs(dx) > Math.abs(dy) * 1.5;
+  if (!swipe.locked) return;
+  swipe.dx = dx; swipe.el.classList.add('swiping');
+  swipe.el.style.transform = `translateX(${dx}px)`; swipe.el.style.opacity = String(Math.max(.35, 1 - Math.abs(dx) / 300));
+}, { passive: true });
+document.addEventListener('touchend', () => {
+  if (!swipe) return;
+  const { el, dx, locked } = swipe; swipe = null;
+  el.classList.remove('swiping');
+  if (locked && Math.abs(dx) > 90) {
+    el.style.transform = `translateX(${dx > 0 ? 110 : -110}%)`; el.style.opacity = '0';
+    setTimeout(() => guarded(null, () => clickActions[el.dataset.swipe](el)), 160);
+  } else { el.style.transform = ''; el.style.opacity = ''; }
 });
 document.addEventListener('submit', (e) => {
   const f = e.target.closest('form[data-form]');
