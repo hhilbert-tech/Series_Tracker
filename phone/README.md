@@ -2,15 +2,15 @@
 
 Finds your next book: **Discover** (the home screen) shows books similar to what you've read (Hardcover's
 "similar books", standalones included), unread books by authors you follow, and popular books in your genres.
-**Releases** is the reminder side: next release, just out, coming up, continue reading, and the Updates feed.
+**Following** holds what you follow plus the reminder side: *Releases* (next release, just out, coming up, continue reading) and the *Updates* feed.
 
 An installable web app. Everything runs in your phone's browser and your data stays on the phone
 (IndexedDB). The only network traffic is to Hardcover (and cover images), straight from the phone.
 
 ## What differs from the spec
 - **No nightly email.** There is no always-on machine. The app checks when you open it (at most every 12 hours,
-  or tap *More → Check now*) and lists changes under **Releases → Updates** with a badge.
-- **Authors:** search an author and tap *Follow author* (or use the *follow author* link on a series or book page). Their unread books show in Discover; any new book by them lands in Releases → Updates; books of a series you already follow are left to the series check.
+  or tap *More → Check now*) and lists changes under **Following → Updates** with a badge on the Following tab.
+- **Authors:** search an author and tap *Follow author* (or use the *follow author* link on a series or book page). Their unread books show in Discover; any new book by them lands in Following → Updates; books of a series you already follow are left to the series check.
 - **Background alerts: best effort.** On Android Chrome, with the app installed, *More → Enable background alerts*
   asks the browser to check periodically and show a notification. The browser decides if and when it runs.
   iPhone can't do this.

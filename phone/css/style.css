@@ -42,7 +42,7 @@ main { max-width: 40rem; margin: 0 auto; padding: 1rem; outline: none; }
 .badge.fill { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
 .error { color: var(--danger); font-weight: 600; }
 
-.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; display: grid; grid-template-columns: repeat(5, 1fr);
+.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; display: grid; grid-template-columns: repeat(4, 1fr);
         background: var(--surface); border-top: 1px solid var(--border); padding-bottom: env(safe-area-inset-bottom); }
 .tabs a { display: flex; align-items: center; justify-content: center; gap: .3rem; min-height: 3.5rem; color: var(--muted);
           text-decoration: none; font-weight: 600; font-size: .8rem; }
