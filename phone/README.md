@@ -1,7 +1,14 @@
 # Book Finder — phone app (no server)
 
-Finds your next book: **Discover** (the home screen) shows books similar to what you've read (Hardcover's
-"similar books", standalones included), unread books by authors you follow, and popular books in your genres.
+Finds your next book. **Discover** (the home screen) shows books similar to what you've read (Hardcover's
+"similar books", standalones included; a series is suggested from its book 1), unread books by authors you follow,
+and popular books in your genres. Also on Discover:
+- *Find books like…*: search any title and see books similar to it.
+- Filters: standalones / series, minimum rating, maximum length.
+- *Want to read*: save a pick for later (also marked Want to Read on Hardcover when your token allows it).
+- *♥ Favourite* a book you've read (book pages, or *♥ Loved it* on a pick): favourites steer the picks at double weight.
+- *Not interested* twice for the same author (or genre row) sends the rest of them to the end; *Never suggest* hides an author.
+
 **Following** holds what you follow plus the reminder side: *Releases* (next release, just out, coming up, continue reading) and the *Updates* feed.
 
 An installable web app. Everything runs in your phone's browser and your data stays on the phone

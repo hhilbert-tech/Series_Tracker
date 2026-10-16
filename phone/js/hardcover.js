@@ -52,6 +52,7 @@ export const EXPECTED_FIELDS = {
   user_books: ['status_id', 'book'],
   contributions: ['author_id', 'book', 'contribution'],
   authors: ['id', 'name'],
+  mutation_root: ['insert_user_book', 'delete_user_book'],
 };
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
@@ -242,19 +243,49 @@ export class HardcoverClient {
     });
   }
 
+  // Book #1 of some series, one request: Map(seriesId -> {hardcover_book_id, title, author, author_id, users_count, rating, pages, cover_url}).
+  // The most-read edition-free entry wins when several books share position 1 (translations etc.).
+  async firstBooks(seriesIds) {
+    seriesIds = [...new Set(seriesIds)].slice(0, 40).map(Number);
+    if (!seriesIds.length) return new Map();
+    const data = await this.gql(`query FirstBooks($ids: [Int!]) { book_series(
+      where: {series_id: {_in: $ids}, position: {_eq: 1}, book: {canonical_id: {_is_null: true}, is_partial_book: {_eq: false}, compilation: {_eq: false}}}
+      distinct_on: series_id order_by: [{series_id: asc}, {book: {users_count: desc}}]
+    ) { series_id book { id title users_count rating pages image { url } contributions { author { id name } } } } }`, { ids: seriesIds });
+    const out = new Map();
+    for (const row of data.book_series ?? []) {
+      const b = row.book, a = b?.contributions?.[0]?.author;
+      if (!b?.id || row.series_id == null) continue;
+      out.set(Number(row.series_id), { hardcover_book_id: Number(b.id), title: b.title ?? '', author: a?.name ?? null, author_id: Number(a?.id) || null,
+        users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null, cover_url: b.image?.url ?? null });
+    }
+    return out;
+  }
+
+  // Your Hardcover shelf: mark a book "Want to Read" (status 1); returns the user_book id (needed to undo), or throws.
+  async wantToRead(bookId) {
+    const data = await this.gql('mutation WantToRead($id: Int!) { insert_user_book(object: {book_id: $id, status_id: 1}) { id error } }', { id: Number(bookId) });
+    const r = data.insert_user_book;
+    if (r?.error) throw new HardcoverError(`Hardcover: ${r.error}`);
+    return Number(r?.id) || null;
+  }
+  async removeUserBook(userBookId) {
+    await this.gql('mutation RemoveUserBook($id: Int!) { delete_user_book(id: $id) { id } }', { id: Number(userBookId) });
+  }
+
   // Popular series in a genre, via their first book (whose id and title come along).
   async popularInGenre(slug, category = 'Genre') {
     const data = await this.gql(`query PopularInGenre($tag: jsonb!) { books(
       where: {cached_tags: {_contains: $tag}, canonical_id: {_is_null: true}, book_series: {position: {_eq: 1}}}
       order_by: {users_count: desc}, limit: 20
-    ) { id title users_count rating image { url } book_series(where: {position: {_eq: 1}}, limit: 1) { series { ${SERIES_FIELDS} } } } }`, { tag: { [category]: [{ tagSlug: slug }] } });
+    ) { id title users_count rating pages image { url } book_series(where: {position: {_eq: 1}}, limit: 1) { series { ${SERIES_FIELDS} } } } }`, { tag: { [category]: [{ tagSlug: slug }] } });
     const out = [];
     for (const b of data.books ?? []) {
       const s = b.book_series?.[0]?.series;
       if (!s?.id) continue;
       out.push({ hardcover_series_id: Number(s.id), name: s.name ?? '', author: s.author?.name ?? null, cover_url: b.image?.url ?? null,
         complete: Boolean(s.is_completed), users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null,
-        hardcover_book_id: Number(b.id) || null, title: b.title ?? null });
+        hardcover_book_id: Number(b.id) || null, title: b.title ?? null, pages: Number(b.pages) > 0 ? Number(b.pages) : null });
     }
     return out;
   }

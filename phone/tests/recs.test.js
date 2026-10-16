@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MemStore } from '../js/store-mem.js';
 import { upsertSeries, bumpProgress, removeSeries, setSetting } from '../js/db.js';
-import { buildRecs, loadRecs, dismissRec, recsStale, authorPicks, shelves, RECS_TTL_MS } from '../js/recs.js';
+import { buildRecs, loadRecs, dismissRec, recsStale, authorPicks, shelves, RECS_TTL_MS, toggleFavourite, hideAuthor, addWant, wantList, removeWant, filterPicks, similarTo } from '../js/recs.js';
 import { HardcoverAuthError, HardcoverClient } from '../js/hardcover.js';
 import { FakeClient, book, PAST } from './helpers.js';
 
@@ -82,7 +82,7 @@ test('Hardcover client: authorSeries is one aliased request and filters other au
     { id: 11, genres: [{ slug: 'fantasy', name: 'Fantasy', count: 4 }], tags: [{ slug: 'dark-fantasy', name: 'Dark Fantasy', count: 2 }], categories: ['Genre', 'Tag'] },
     { id: 12, genres: [{ slug: 'horror', name: 'Horror', count: 1 }], tags: [], categories: ['Genre'] }, { id: 13, genres: [], tags: [], categories: [] }]);
   const g = await c.popularInGenre('fantasy');
-  assert.deepEqual(g, [{ hardcover_series_id: 5, name: 'S', author: 'A', cover_url: 'u', complete: true, users_count: 7, rating: null, hardcover_book_id: 1, title: null }]);
+  assert.deepEqual(g, [{ hardcover_series_id: 5, name: 'S', author: 'A', cover_url: 'u', complete: true, users_count: 7, rating: null, hardcover_book_id: 1, title: null, pages: null }]);
   assert.deepEqual(bodies[2].variables, { tag: { Genre: [{ tagSlug: 'fantasy' }] } });
 });
 
@@ -183,4 +183,95 @@ test('Hardcover client: a request that hangs times out with a clear error', asyn
   const c = new HardcoverClient({ getToken: () => 't', limiter: { async acquire() {} }, timeoutMs: 30,
     fetch: (u, init) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted')))) });
   await assert.rejects(() => c.gql('query { x }'), /took too long/);
+});
+
+async function oneReadBook(id = 11, title = 'One') {
+  const store = new MemStore(), client = new FakeClient();
+  const sid = await upsertSeries(store, 1, 'Read Saga', 'Ann Author');
+  await store.put('series_book', { key: `${sid}:1`, series_id: sid, position: 1, hardcover_book_id: id, title, release_date: '2010-01-01' });
+  await bumpProgress(store, sid, 1);
+  return { store, client };
+}
+const sbook = (t, sid, p, extra = {}) => ({ title: t, author: 'X', author_id: 7, users_count: 1, rating: 4, pages: 300, cover_url: null,
+  series: { hardcover_series_id: sid, name: `S${sid}`, author: 'X', complete: false, position: p }, ...extra });
+
+test('book 1: a match deep in an unstarted series is replaced by book #1 (one request), remembering what matched', async () => {
+  const { store, client } = await oneReadBook();
+  client.similar[11] = [21, 22]; client.info[21] = sbook('Third Wave', 80, 3); client.info[22] = sbook('Opening', 81, 1);
+  client.firsts[80] = { hardcover_book_id: 801, title: 'First Wave', author: 'X', author_id: 7, users_count: 9, rating: 4.4, pages: 280, cover_url: 'c' };
+  const rec = await buildRecs(store, client);
+  const p = rec.items.find((i) => i.key === 's:80');
+  assert.deepEqual([p.hardcover_book_id, p.title, p.series.position, p.via, p.rating], [801, 'First Wave', 1, '#3 Third Wave', 4.4]);
+  assert.deepEqual(client.calls.filter((c) => c[0] === 'firstBooks').map((c) => c[1]), [[80]]);   // #1 picks need no lookup
+});
+
+test('book 1: if you have read book #1, the pick stays as found; a failed lookup changes nothing', async () => {
+  const { store, client } = await oneReadBook();
+  await store.put('book', { id: 1, title: 'First Wave', author: 'X', hardcover_book_id: 801, read: 1, review_status: 'ok' });
+  client.similar[11] = [21]; client.info[21] = sbook('Third Wave', 80, 3);
+  client.firsts[80] = { hardcover_book_id: 801, title: 'First Wave' };
+  assert.equal((await buildRecs(store, client)).items[0].title, 'Third Wave');
+  const s2 = await oneReadBook(); s2.client.similar[11] = [21]; s2.client.info[21] = sbook('Third Wave', 80, 3);
+  s2.client.firstBooks = async () => { throw new Error('nope'); };
+  const r2 = await buildRecs(s2.store, s2.client);
+  assert.equal(r2.items[0].title, 'Third Wave'); assert.match(r2.errors[0], /first books/);
+});
+
+test('favourites: always seeds, double weight, shelf says "loved"; toggling marks picks for rebuild', async () => {
+  const { store, client } = await oneReadBook();
+  await store.put('book', { id: 2, title: 'Old Love', author: 'Q', hardcover_book_id: 99, read: 1, review_status: 'ok' });
+  client.similar[11] = [31, 32]; client.similar[99] = [32];
+  client.info[31] = { title: 'A', series: null }; client.info[32] = { title: 'B', series: null };
+  await buildRecs(store, client);
+  assert.equal(await toggleFavourite(store, 99, 'Old Love'), true);
+  assert.equal(recsStale(await loadRecs(store)), true);                                     // rebuild on next visit
+  const rec = await buildRecs(store, client);
+  assert.equal(client.calls.filter((c) => c[0] === 'similarBookIds').pop()[1][0], 99);       // favourites first
+  assert.deepEqual(rec.items.map((i) => [i.title, i.group]), [['B', 'Because you loved Old Love'], ['A', 'Because you read One']]);
+  assert.equal(await toggleFavourite(store, 99, 'Old Love'), false);
+});
+
+test('less like this: two dismissals sink an author (and a genre shelf); hiding an author removes them', async () => {
+  const store = new MemStore();
+  const it = (k, author, rank, extra = {}) => ({ key: k, hardcover_book_id: Number(k.slice(2)), title: k, author, rank, kind: 'similar', series: null, ...extra });
+  await setSetting(store, 'recs', { v: 2, at: new Date().toISOString(), items: [it('b:1', 'Ann', 90), it('b:2', 'Ann', 80), it('b:3', 'Ann', 70), it('b:4', 'Bo', 10),
+    it('b:5', 'Cy', 60, { kind: 'genre', group: 'Popular in Horror' }), it('b:6', 'Di', 50, { kind: 'genre', group: 'Popular in Horror' }), it('b:7', 'Ed', 40, { kind: 'genre', group: 'Popular in Horror' })] });
+  await dismissRec(store, 'b:1', { author: 'Ann' }); await dismissRec(store, 'b:2', { author: 'Ann' });
+  await dismissRec(store, 'b:5', { author: 'Cy', group: 'Popular in Horror' }); await dismissRec(store, 'b:6', { author: 'Di', group: 'Popular in Horror' });
+  assert.deepEqual((await loadRecs(store)).items.map((i) => i.key), ['b:4', 'b:3', 'b:7']);
+  await hideAuthor(store, 'bo');
+  assert.deepEqual((await loadRecs(store)).items.map((i) => i.key), ['b:3', 'b:7']);
+});
+
+test('want to read: saved picks leave the pick list, show newest first, and drop off once read', async () => {
+  const store = new MemStore();
+  const it = (k, t) => ({ key: k, hardcover_book_id: Number(k.slice(2)), title: t, author: 'A', rank: 1, kind: 'similar', series: null });
+  await setSetting(store, 'recs', { v: 2, at: new Date().toISOString(), items: [it('b:1', 'One'), it('b:2', 'Two')] });
+  await addWant(store, it('b:1', 'One'), { hc_user_book_id: 55 });
+  await new Promise((r) => setTimeout(r, 1100)); await addWant(store, it('b:2', 'Two'));
+  assert.deepEqual((await loadRecs(store)).items.length, 0);
+  assert.deepEqual((await wantList(store)).map((w) => w.title), ['Two', 'One']);
+  await store.put('book', { id: 1, title: 'Two', author: 'A', hardcover_book_id: 2, read: 1, review_status: 'ok' });
+  assert.deepEqual((await wantList(store)).map((w) => w.title), ['One']);
+  assert.equal((await removeWant(store, 'b:1')).hc_user_book_id, 55);
+  assert.equal((await wantList(store)).length, 0);
+});
+
+test('filters: standalones / series, minimum rating, maximum pages; unknown values pass', () => {
+  const items = [{ key: 'a', series: null, rating: 4.5, pages: 200 }, { key: 'b', series: { hardcover_series_id: 1 }, rating: 3.2, pages: 700 }, { key: 'c', series: null, rating: null, pages: null }];
+  const keys = (f) => filterPicks(items, { kind: 'all', minRating: 0, maxPages: 0, ...f }).map((i) => i.key);
+  assert.deepEqual(keys({}), ['a', 'b', 'c']);
+  assert.deepEqual(keys({ kind: 'standalone' }), ['a', 'c']);
+  assert.deepEqual(keys({ kind: 'series' }), ['b']);
+  assert.deepEqual(keys({ minRating: 4 }), ['a', 'c']);
+  assert.deepEqual(keys({ maxPages: 400 }), ['a', 'c']);
+});
+
+test('similarTo: one book in, picks out; read books and the book itself left out; series via book 1', async () => {
+  const { store, client } = await oneReadBook();
+  client.similar[500] = [500, 11, 41, 42, 43];
+  client.info[41] = sbook('Deep', 90, 4); client.info[42] = sbook('Deeper', 90, 5); client.info[43] = { title: 'Solo', author: 'Y', series: null };
+  client.firsts[90] = { hardcover_book_id: 901, title: 'Shallow' };
+  const out = await similarTo(store, client, 500, 'Seed');
+  assert.deepEqual(out.map((i) => [i.title, i.key, i.why]), [['Shallow', 's:90', 'Similar to Seed'], ['Solo', 'b:43', 'Similar to Seed']]);
 });
