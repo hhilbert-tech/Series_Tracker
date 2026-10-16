@@ -191,25 +191,25 @@ export class HardcoverClient {
     return out;
   }
 
-  // Genre tags of some books: [{id, genres: [{slug, name, count}]}].
+  // Tags of some books: [{id, genres: [{slug, name, count}], tags: [...same shape, "Tag" category = finer subgenres/themes]}].
   async bookTags(ids) {
     ids = [...new Set(ids)].slice(0, 40).map(Number);
     if (!ids.length) return [];
     const data = await this.gql('query BookTags($ids: [Int!]) { books(where: {id: {_in: $ids}}) { id cached_tags } }', { ids });
     return (data.books ?? []).map((b) => {
       let ct = b.cached_tags; if (typeof ct === 'string') { try { ct = JSON.parse(ct); } catch { ct = null; } }
-      const genres = (ct?.Genre ?? ct?.genre ?? []).map((g) => ({ slug: g.tagSlug ?? g.tag_slug ?? g.slug ?? null, name: g.tag ?? g.name ?? null, count: Number(g.count) || 1 }))
+      const pick = (...keys) => keys.flatMap((k) => ct?.[k] ?? []).map((g) => ({ slug: g.tagSlug ?? g.tag_slug ?? g.slug ?? null, name: g.tag ?? g.name ?? null, count: Number(g.count) || 1 }))
         .filter((g) => g.slug);
-      return { id: Number(b.id), genres };
+      return { id: Number(b.id), genres: pick('Genre', 'genre'), tags: pick('Tag', 'tag'), categories: ct && typeof ct === 'object' ? Object.keys(ct) : [] };
     });
   }
 
   // Popular series (via their first book) in a genre.
-  async popularInGenre(slug) {
+  async popularInGenre(slug, category = 'Genre') {
     const data = await this.gql(`query PopularInGenre($tag: jsonb!) { books(
       where: {cached_tags: {_contains: $tag}, canonical_id: {_is_null: true}, book_series: {position: {_eq: 1}}}
       order_by: {users_count: desc}, limit: 20
-    ) { id users_count rating image { url } book_series(where: {position: {_eq: 1}}, limit: 1) { series { ${SERIES_FIELDS} } } } }`, { tag: { Genre: [{ tagSlug: slug }] } });
+    ) { id users_count rating image { url } book_series(where: {position: {_eq: 1}}, limit: 1) { series { ${SERIES_FIELDS} } } } }`, { tag: { [category]: [{ tagSlug: slug }] } });
     const out = [];
     for (const b of data.books ?? []) {
       const s = b.book_series?.[0]?.series;

@@ -5,7 +5,7 @@ import { HardcoverAuthError } from './hardcover.js';
 import { getSetting, setSetting, nowIso, maxRead, removedSeriesIds, isRead } from './db.js';
 
 export const RECS_TTL_MS = 7 * 864e5;
-const MAX_AUTHORS = 8, MAX_GENRES = 2, MAX_ITEMS = 60;
+const MAX_AUTHORS = 8, MAX_GENRES = 2, MAX_TAGS = 2, MAX_ITEMS = 60;
 
 export async function buildRecs(store, client, { genres: maxGenres = MAX_GENRES } = {}) {
   const series = await store.all('series'), authors = await store.all('author');
@@ -29,8 +29,13 @@ export async function buildRecs(store, client, { genres: maxGenres = MAX_GENRES 
       const read = await maxRead(store, s.id);
       for (const r of await store.all('series_book')) if (r.series_id === s.id && isRead(r, read) && r.hardcover_book_id) ids.push(r.hardcover_book_id);
     }
-    const tally = new Map();
-    for (const b of await client.bookTags(ids)) for (const g of b.genres) tally.set(g.slug, { slug: g.slug, name: g.name ?? g.slug, n: (tally.get(g.slug)?.n ?? 0) + g.count });
+    const tally = new Map(), tagTally = new Map(), books = await client.bookTags(ids);
+    const count = (m, g) => m.set(g.slug, { slug: g.slug, name: g.name ?? g.slug, n: (m.get(g.slug)?.n ?? 0) + g.count });
+    for (const b of books) { for (const g of b.genres) count(tally, g); for (const g of b.tags ?? []) count(tagTally, g); }
+    // finer tags (e.g. dark fantasy) first: they rank above plain genre matches, so suggestions are narrower
+    for (const g of [...tagTally.values()].sort((a, b) => b.n - a.n).slice(0, MAX_TAGS)) {
+      for (const s of await client.popularInGenre(g.slug, 'Tag')) items.push({ ...s, why: `Popular in ${g.name}`, kind: 'genre', rank: 1e6 + (s.users_count ?? 0) });
+    }
     for (const g of [...tally.values()].sort((a, b) => b.n - a.n).slice(0, maxGenres)) {
       for (const s of await client.popularInGenre(g.slug)) items.push({ ...s, why: `Popular in ${g.name}`, kind: 'genre', rank: s.users_count ?? 0 });
     }

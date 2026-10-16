@@ -71,15 +71,30 @@ test('Hardcover client: authorSeries is one aliased request and filters other au
   const c = new HardcoverClient({ getToken: () => 't', limiter: { async acquire() {} }, fetch: async (u, init) => {
     const b = JSON.parse(init.body); bodies.push(b);
     if (b.query.includes('AuthorSeries')) return json({ data: { a0: hits([{ id: '2', name: 'Tide Pool', author_names: ['Ann Author'] }, { id: '9', name: 'Imposter', author_names: ['Someone Else'] }]), a1: hits([]) } });
-    if (b.query.includes('BookTags')) return json({ data: { books: [{ id: 11, cached_tags: { Genre: [{ tag: 'Fantasy', tagSlug: 'fantasy', count: 4 }] } }, { id: 12, cached_tags: '{"Genre":[{"tag":"Horror","tagSlug":"horror"}]}' }, { id: 13, cached_tags: null }] } });
+    if (b.query.includes('BookTags')) return json({ data: { books: [{ id: 11, cached_tags: { Genre: [{ tag: 'Fantasy', tagSlug: 'fantasy', count: 4 }], Tag: [{ tag: 'Dark Fantasy', tagSlug: 'dark-fantasy', count: 2 }] } }, { id: 12, cached_tags: '{"Genre":[{"tag":"Horror","tagSlug":"horror"}]}' }, { id: 13, cached_tags: null }] } });
     return json({ data: { books: [{ id: 1, users_count: 7, image: { url: 'u' }, book_series: [{ series: { id: 5, name: 'S', author: { name: 'A' }, is_completed: true } }] }, { id: 2, book_series: [] }] } });
   } });
   const m = await c.authorSeries(['Ann Author', 'Zed']);
   assert.equal(bodies.length, 1);
   assert.deepEqual(m.get('Ann Author').map((s) => s.name), ['Tide Pool']);
   assert.deepEqual(await c.bookTags([11, 12, 13]), [
-    { id: 11, genres: [{ slug: 'fantasy', name: 'Fantasy', count: 4 }] }, { id: 12, genres: [{ slug: 'horror', name: 'Horror', count: 1 }] }, { id: 13, genres: [] }]);
+    { id: 11, genres: [{ slug: 'fantasy', name: 'Fantasy', count: 4 }], tags: [{ slug: 'dark-fantasy', name: 'Dark Fantasy', count: 2 }], categories: ['Genre', 'Tag'] },
+    { id: 12, genres: [{ slug: 'horror', name: 'Horror', count: 1 }], tags: [], categories: ['Genre'] }, { id: 13, genres: [], tags: [], categories: [] }]);
   const g = await c.popularInGenre('fantasy');
   assert.deepEqual(g, [{ hardcover_series_id: 5, name: 'S', author: 'A', cover_url: 'u', complete: true, users_count: 7, rating: null }]);
   assert.deepEqual(bodies[2].variables, { tag: { Genre: [{ tagSlug: 'fantasy' }] } });
+});
+
+test('subgenre tags rank above plain genre matches and use the Tag category', async () => {
+  const store = new MemStore(), client = new FakeClient();
+  const sid = await upsertSeries(store, 1, 'Read Saga', 'Ann Author');
+  await store.put('series_book', { key: `${sid}:1`, series_id: sid, position: 1, hardcover_book_id: 11, title: 'One', release_date: '2010-01-01' });
+  await bumpProgress(store, sid, 1);
+  client.tags[11] = [{ slug: 'fantasy', name: 'Fantasy', count: 3 }]; client.subtags[11] = [{ slug: 'dark-fantasy', name: 'Dark Fantasy', count: 2 }];
+  client.genreSeries['dark-fantasy'] = [{ hardcover_series_id: 50, name: 'Grim', author: 'G', cover_url: null, complete: false, users_count: 10 }];
+  client.genreSeries.fantasy = [{ hardcover_series_id: 51, name: 'Plain', author: 'P', cover_url: null, complete: false, users_count: 9000 }, { hardcover_series_id: 50, name: 'Grim', author: 'G', cover_url: null, complete: false, users_count: 10 }];
+  const rec = await buildRecs(store, client);
+  assert.deepEqual(rec.items.map((i) => i.name), ['Grim', 'Plain']);
+  assert.equal(rec.items[0].why, 'Popular in Dark Fantasy');
+  assert.ok(client.calls.some((c) => c[0] === 'popularInGenre' && c[1] === 'dark-fantasy' && c[2] === 'Tag'));
 });

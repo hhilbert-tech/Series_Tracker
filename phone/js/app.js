@@ -547,7 +547,7 @@ async function viewMore() {
     <section class="panel"><h2>Hardcover fields</h2>
       <p class="meta">The app's Hardcover queries were written from the public docs. This compares them with the live schema.</p>
       <p><button data-click="verify">Verify Hardcover fields</button></p><pre class="out" id="verify-out"></pre>
-      <p class="meta">App version: read ticks, next to read, links, ratings (v8)</p></section>
+      <p class="meta">App version: subgenre suggestions (v9)</p></section>
 
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}`;
@@ -695,7 +695,13 @@ const clickActions = {
     const out = document.getElementById('verify-out'); out.textContent = 'Checking…';
     const r = await client.verifyFields();
     const bad = Object.entries(r).filter(([, m]) => m.length);
-    out.textContent = bad.length ? 'Missing fields:\n' + bad.map(([t, m]) => `${t}: ${m.join(', ')}`).join('\n') : 'All expected fields exist.';
+    let txt = bad.length ? 'Missing fields:\n' + bad.map(([t, m]) => `${t}: ${m.join(', ')}`).join('\n') : 'All expected fields exist.';
+    try {                                                           // show what Hardcover's tag data looks like for one of your read books
+      const ids = (await store.all('series_book')).filter((r) => r.hardcover_book_id && r.read !== false).slice(0, 3).map((r) => r.hardcover_book_id);
+      const [b] = await client.bookTags(ids);
+      txt += b ? `\n\nTag data for book ${b.id}:\ncategories: ${b.categories.join(', ') || '(none)'}\ngenres: ${b.genres.slice(0, 5).map((g) => `${g.name ?? g.slug} (${g.count})`).join(', ') || '(none)'}\ntags: ${b.tags.slice(0, 8).map((g) => `${g.name ?? g.slug} (${g.count})`).join(', ') || '(none)'}` : '\n\nNo book to sample tags from yet.';
+    } catch (e) { txt += `\n\nTag sample failed: ${msg(e)}`; }
+    out.textContent = txt;
   },
   async 'enable-alerts'() {
     const perm = await Notification.requestPermission();
