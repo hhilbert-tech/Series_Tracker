@@ -138,3 +138,17 @@ test('mark all released as read, then undo; unreleased never counts', async () =
   await setProgress(store, sid, 0);
   assert.equal(await maxRead(store, sid), 0);
 });
+
+test('removeSeries clears the series and its data, keeps others', async () => {
+  const { removeSeries } = await import('../js/db.js');
+  const store = new MemStore();
+  const a = await addSeries(store, { hc: 1 }), b = await addSeries(store, { hc: 2, name: 'Other' });
+  const client = new FakeClient(); client.series[1] = four(FUTURE); client.series[2] = four(FUTURE);
+  await runCheck(store, client, { today: TODAY });
+  await removeSeries(store, a);
+  assert.equal(await store.get('series', a), undefined);
+  assert.equal(await store.get('user_progress', a), undefined);
+  assert.ok((await store.all('series_book')).every((r) => r.series_id === b));
+  assert.ok((await store.all('notification_log')).every((r) => r.series_id === b));
+  assert.ok(await store.get('series', b));
+});

@@ -3,7 +3,7 @@
 import { openIdbStore } from './store-idb.js';
 import { HardcoverClient, HardcoverError } from './hardcover.js';
 import { CoverCache, placeholderUri } from './covers.js';
-import { getSetting, setSetting, maxRead, setProgress, lastReleased, nowIso } from './db.js';
+import { getSetting, setSetting, maxRead, setProgress, removeSeries, lastReleased, nowIso } from './db.js';
 import { runCheck, updates, pendingEvents, markAllSeen } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
 import { KEYS } from './store-base.js';
@@ -77,6 +77,7 @@ function seriesCard(s, read, next) {
       <p>${next ? `Next: #${pos(next.position)} ${esc(next.title)} — ${esc(next.release_date ?? 'date TBA')}`
         : s.last_checked_at ? 'No unread book announced yet' : 'Not checked yet'}</p>
       <button data-click="mute" data-id="${s.id}">${s.muted ? 'Unmute' : 'Mute'}</button>
+      <button data-click="remove" data-id="${s.id}" data-name="${esc(s.name)}">Remove</button>
     </div></li>`;
 }
 
@@ -110,6 +111,7 @@ async function viewSeries(id) {
         <p class="meta">${s.last_checked_at ? 'Last checked ' + esc(s.last_checked_at) : 'Not checked yet'}</p>
         <button data-click="mute" data-id="${s.id}">${s.muted ? 'Unmute' : 'Mute'}</button>
         <button data-click="read-all" data-id="${s.id}">Mark all released as read</button>
+        <button data-click="remove" data-id="${s.id}" data-name="${esc(s.name)}" data-home="1">Remove</button>
         ${read ? `<button data-click="read-none" data-id="${s.id}">Reset progress</button>` : ''}</div></div>
     ${books.length ? `<ul class="rows">${books.map((b) => {
       const whole = Number.isInteger(b.position), isRead = b.position <= read;
@@ -316,6 +318,12 @@ const clickActions = {
     location.hash = '#/review'; await route();
   },
   async 'read-to'(el) { await setProgress(store, Number(el.dataset.id), Number(el.dataset.pos)); await route(); },
+  async remove(el) {
+    if (!confirm(`Stop following “${el.dataset.name}”? Its progress and updates are deleted.`)) return;
+    await removeSeries(store, Number(el.dataset.id));
+    if (el.dataset.home) location.hash = '#/';
+    toast('Removed.'); await route();
+  },
   async 'read-none'(el) { await setProgress(store, Number(el.dataset.id), 0); await route(); },
   async 'read-all'(el) {
     const sid = Number(el.dataset.id), p = await lastReleased(store, sid, nowIso().slice(0, 10));

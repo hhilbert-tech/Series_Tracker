@@ -39,4 +39,13 @@ export async function lastReleased(store, sid, today) {
     .map((r) => r.position);
   return ps.length ? Math.max(...ps) : 0;
 }
+// Stop following: drops the series, its book list, progress and updates. Books imported from
+// Goodreads are marked ignored so a later re-import doesn't quietly re-follow it.
+export async function removeSeries(store, sid) {
+  for (const r of await store.all('series_book')) if (r.series_id === sid) await store.delete('series_book', r.key);
+  for (const r of await store.all('notification_log')) if (r.series_id === sid) await store.delete('notification_log', r.key);
+  for (const b of await store.all('book')) if (b.series_id === sid) await store.put('book', { ...b, review_status: 'ignored' });
+  await store.delete('user_progress', sid);
+  await store.delete('series', sid);
+}
 export async function maxRead(store, sid) { return (await store.get('user_progress', sid))?.max_position_read ?? 0; }
