@@ -5,9 +5,9 @@ import { HardcoverAuthError } from './hardcover.js';
 import { getSetting, setSetting, nowIso, maxRead, removedSeriesIds } from './db.js';
 
 export const RECS_TTL_MS = 7 * 864e5;
-const MAX_AUTHORS = 8, MAX_GENRES = 2, MAX_ITEMS = 40;
+const MAX_AUTHORS = 8, MAX_GENRES = 2, MAX_ITEMS = 60;
 
-export async function buildRecs(store, client) {
+export async function buildRecs(store, client, { genres: maxGenres = MAX_GENRES } = {}) {
   const series = await store.all('series'), authors = await store.all('author');
   const errors = [], items = [];
 
@@ -31,7 +31,7 @@ export async function buildRecs(store, client) {
     }
     const tally = new Map();
     for (const b of await client.bookTags(ids)) for (const g of b.genres) tally.set(g.slug, { slug: g.slug, name: g.name ?? g.slug, n: (tally.get(g.slug)?.n ?? 0) + g.count });
-    for (const g of [...tally.values()].sort((a, b) => b.n - a.n).slice(0, MAX_GENRES)) {
+    for (const g of [...tally.values()].sort((a, b) => b.n - a.n).slice(0, maxGenres)) {
       for (const s of await client.popularInGenre(g.slug)) items.push({ ...s, why: `Popular in ${g.name}`, kind: 'genre', rank: s.users_count ?? 0 });
     }
   } catch (e) { if (e instanceof HardcoverAuthError) throw e; errors.push(`genres: ${e.message ?? e}`); }

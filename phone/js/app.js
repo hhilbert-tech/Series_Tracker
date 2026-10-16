@@ -209,6 +209,32 @@ async function viewAuthorBook(aid, bid) {
     <div id="book-more"><p class="meta">Loading details…</p></div>`;
 }
 
+async function viewRec(id) {
+  id = Number(id);
+  const rec = await getSetting(store, 'recs', null), r = rec?.items.find((i) => i.hardcover_series_id === id);
+  if (!r) return '<p>Suggestion no longer available. <a href="#/">Back</a></p>';
+  const today = todayIso();
+  afterRender = async () => {
+    const box = document.getElementById('book-more');
+    if (!box) return;
+    try {
+      const books = await client.seriesBooks(id), first = books[0];
+      let d = null;
+      if (first) { try { d = await client.bookDetails(first.hardcover_book_id); } catch { /* list still useful */ } }
+      box.innerHTML = `${d?.description ? `<p class="desc">${esc(d.description).replace(/\n+/g, '</p><p class="desc">')}</p>` : ''}
+        ${books.length ? `<h2 class="label">${books.length} book${books.length > 1 ? 's' : ''}</h2><ul class="rows">${books.map((b) => { const w = when(b.release_date, today);
+          return `<li>${img(null, b.cover_url, b.title, r.name, 'cover small')}<div class="grow"><strong><span class="num">#${pos(b.position)}</span> ${esc(b.title)}</strong><br>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date, today))}</span></div></li>`; }).join('')}</ul>` : '<p class="meta">No books listed on Hardcover.</p>'}`;
+    } catch (e) { box.innerHTML = `<p class="meta">Details unavailable: ${esc(msg(e))}</p>`; }
+  };
+  return `<p><a class="back" href="#/">← Home</a></p>
+    <div class="hero">${img(null, r.cover_url, r.name, r.name, 'cover big')}
+      <div class="body"><h1>${esc(r.name)}</h1><p class="meta">${esc(r.author ?? 'Unknown author')}</p>
+        <p><span class="chip ${r.kind === 'author' ? 'near' : ''}">${esc(r.why)}</span></p></div></div>
+    <div class="actions"><button class="primary" data-click="rec-follow" data-hc="${id}" data-name="${esc(r.name)}" data-author="${esc(r.author ?? '')}" data-cover="${esc(r.cover_url ?? '')}" data-complete="${r.complete ? 1 : ''}">Follow</button>
+      <button data-click="rec-dismiss" data-hc="${id}" data-home="1">Not interested</button></div>
+    <div id="book-more"><p class="meta">Loading details…</p></div>`;
+}
+
 async function viewAuthor(id) {
   const a = await store.get('author', Number(id));
   if (!a) return '<p>No such author. <a href="#/following">Back</a></p>';
@@ -363,9 +389,9 @@ async function viewUpcoming() {
 }
 
 const recCard = (r) => `<li class="card has-actions">
-  <div class="cardlink">${img(null, r.cover_url, r.name, r.name)}
+  <a class="cardlink" href="#/rec/${r.hardcover_series_id}">${img(null, r.cover_url, r.name, r.name)}
     <div class="body"><h2>${esc(r.name)}</h2><p class="meta">${esc(r.author ?? 'Unknown author')}</p>
-      <p><span class="chip ${r.kind === 'author' ? 'near' : ''}">${esc(r.why)}</span></p></div></div>
+      <p><span class="chip ${r.kind === 'author' ? 'near' : ''}">${esc(r.why)}</span></p></div></a>
   <div class="card-actions"><button class="small primary" data-click="rec-follow" data-hc="${r.hardcover_series_id}" data-name="${esc(r.name)}" data-author="${esc(r.author ?? '')}" data-cover="${esc(r.cover_url ?? '')}" data-complete="${r.complete ? 1 : ''}">Follow</button>
     <button class="small" data-click="rec-dismiss" data-hc="${r.hardcover_series_id}">Not interested</button></div></li>`;
 
@@ -491,7 +517,7 @@ async function viewMore() {
     <section class="panel"><h2>Hardcover fields</h2>
       <p class="meta">The app's Hardcover queries were written from the public docs. This compares them with the live schema.</p>
       <p><button data-click="verify">Verify Hardcover fields</button></p><pre class="out" id="verify-out"></pre>
-      <p class="meta">App version: book info on author page (v6)</p></section>
+      <p class="meta">App version: recommendations info + refill (v7)</p></section>
 
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}`;
@@ -502,10 +528,10 @@ async function route() {
   const [path, qs = ''] = location.hash.replace(/^#/, '').split('?');
   const params = new URLSearchParams(qs);
   const [, seg, arg] = path.split('/');
-  const tab = { '': 'home', upcoming: 'home', following: 'following', series: 'following', book: 'following', author: 'following', abook: 'following', search: 'search', updates: 'updates' }[seg ?? ''] ?? 'more';
+  const tab = { '': 'home', upcoming: 'home', following: 'following', series: 'following', book: 'following', author: 'following', abook: 'following', rec: 'home', search: 'search', updates: 'updates' }[seg ?? ''] ?? 'more';
   let html;
   try {
-    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), abook: () => viewAuthorBook(arg, path.split('/')[3]), upcoming: viewUpcoming, following: viewFollowing, search: () => viewSearch(params), updates: viewUpdates,
+    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), abook: () => viewAuthorBook(arg, path.split('/')[3]), rec: () => viewRec(arg), upcoming: viewUpcoming, following: viewFollowing, search: () => viewSearch(params), updates: viewUpdates,
       manual: viewManual, review: () => viewReview(params), more: viewMore }[seg ?? ''] ?? viewHome)();
   } catch (e) { html = `<p class="error">${esc(msg(e))}</p>`; }
   $app.innerHTML = html;
@@ -558,7 +584,14 @@ const clickActions = {
     const sid = await followSeries(store, client, { hardcover_series_id: Number(d.hc), name: d.name, author: d.author || null, cover_url: d.cover || null, complete: Boolean(d.complete) }, 0, covers);
     toast(`Following “${d.name}”. Use “Mark all released as read” on its page if you've read it.`); location.hash = `#/series/${sid}`;
   },
-  async 'rec-dismiss'(el) { await dismissRec(store, Number(el.dataset.hc)); await route(); },
+  async 'rec-dismiss'(el) {
+    await dismissRec(store, Number(el.dataset.hc));
+    if (el.dataset.home) location.hash = '#/'; else await route();
+    const left = (await loadRecs(store))?.items.length ?? 0;
+    if (left < 10 && (await getSetting(store, 'hc_token', ''))) {        // running low: widen the search for more, then redraw Home
+      try { await buildRecs(store, client, { genres: 5 }); if (!location.hash || location.hash === '#/') await route(); } catch { /* keep what is left */ }
+    }
+  },
   async 'recs-refresh'() {
     toast('Looking for suggestions…', { ms: 0 });
     const r = await buildRecs(store, client);
