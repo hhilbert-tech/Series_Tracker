@@ -217,32 +217,35 @@ export class HardcoverClient {
     return out;
   }
 
-  // Basic info plus the first series of some books, one request: [{hardcover_book_id, title, users_count, rating, cover_url, series|null}].
+  // Basic info, first author and first series of some books, one request:
+  // [{hardcover_book_id, title, author, author_id, users_count, rating, pages, cover_url, series: {hardcover_series_id, name, author, complete, position}|null}].
   async booksInfo(ids) {
     ids = [...new Set(ids)].slice(0, 60).map(Number);
     if (!ids.length) return [];
     const data = await this.gql(`query BooksInfo($ids: [Int!]) { books(where: {id: {_in: $ids}, canonical_id: {_is_null: true}}) {
-      id title users_count rating pages image { url } book_series(limit: 1) { series { ${SERIES_FIELDS} } } } }`, { ids });
+      id title users_count rating pages image { url } contributions { author { id name } } book_series(limit: 1) { position series { ${SERIES_FIELDS} } } } }`, { ids });
     return (data.books ?? []).map((b) => {
-      const s = b.book_series?.[0]?.series;
-      return { hardcover_book_id: Number(b.id), title: b.title ?? '', users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null,
+      const bs = b.book_series?.[0], s = bs?.series, a = b.contributions?.[0]?.author;
+      return { hardcover_book_id: Number(b.id), title: b.title ?? '', author: a?.name ?? s?.author?.name ?? null, author_id: Number(a?.id) || null,
+        users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null,
         cover_url: b.image?.url ?? null,
-        series: s?.id ? { hardcover_series_id: Number(s.id), name: s.name ?? '', author: s.author?.name ?? null, complete: Boolean(s.is_completed) } : null };
+        series: s?.id ? { hardcover_series_id: Number(s.id), name: s.name ?? '', author: s.author?.name ?? null, complete: Boolean(s.is_completed), position: num(bs.position) } : null };
     });
   }
 
-  // Popular series (via their first book) in a genre.
+  // Popular series in a genre, via their first book (whose id and title come along).
   async popularInGenre(slug, category = 'Genre') {
     const data = await this.gql(`query PopularInGenre($tag: jsonb!) { books(
       where: {cached_tags: {_contains: $tag}, canonical_id: {_is_null: true}, book_series: {position: {_eq: 1}}}
       order_by: {users_count: desc}, limit: 20
-    ) { id users_count rating image { url } book_series(where: {position: {_eq: 1}}, limit: 1) { series { ${SERIES_FIELDS} } } } }`, { tag: { [category]: [{ tagSlug: slug }] } });
+    ) { id title users_count rating image { url } book_series(where: {position: {_eq: 1}}, limit: 1) { series { ${SERIES_FIELDS} } } } }`, { tag: { [category]: [{ tagSlug: slug }] } });
     const out = [];
     for (const b of data.books ?? []) {
       const s = b.book_series?.[0]?.series;
       if (!s?.id) continue;
       out.push({ hardcover_series_id: Number(s.id), name: s.name ?? '', author: s.author?.name ?? null, cover_url: b.image?.url ?? null,
-        complete: Boolean(s.is_completed), users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null });
+        complete: Boolean(s.is_completed), users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null,
+        hardcover_book_id: Number(b.id) || null, title: b.title ?? null });
     }
     return out;
   }

@@ -54,7 +54,7 @@ main { max-width: 40rem; margin: 0 auto; padding: 1rem; outline: none; }
 
 button, .btn { font: inherit; min-height: 2.75rem; padding: .4rem 1rem; border-radius: 8px; cursor: pointer;
   border: 1px solid var(--accent); background: var(--surface); color: var(--accent); }
-button.primary { background: var(--accent); color: var(--on-accent); }
+button.primary, a.btn.primary { background: var(--accent); color: var(--on-accent); }
 button[disabled] { opacity: .6; cursor: progress; }
 button.danger { border-color: var(--danger); color: var(--danger); }
 input[type=text], input[type=search], input[type=number], input[type=password], input[type=file] {
@@ -186,10 +186,10 @@ details.menu.inline summary { width: auto; height: 2.25rem; padding: 0 .7rem; bo
 /* Following: filters, author shelf */
 .filters { display: flex; gap: .45rem; overflow-x: auto; margin: 0 -16px .75rem; padding: 0 16px; scrollbar-width: none; }
 .filters::-webkit-scrollbar { display: none; }
-button.filter { min-height: 2.25rem; padding: .2rem .8rem; border-radius: 999px; font-size: .9rem; flex: none; white-space: nowrap; }
-button.filter span { color: var(--muted); font-weight: 400; margin-left: .15rem; }
-button.filter[aria-pressed="true"] { background: var(--accent); color: var(--bg); border-color: var(--accent); }
-button.filter[aria-pressed="true"] span { color: inherit; opacity: .75; }
+.filter { min-height: 2.25rem; padding: .2rem .8rem; border-radius: 999px; font-size: .9rem; flex: none; white-space: nowrap; }
+.filter span { color: var(--muted); font-weight: 400; margin-left: .15rem; }
+.filter[aria-pressed="true"], .filter[aria-current="page"] { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.filter[aria-pressed="true"] span, .filter[aria-current="page"] span { color: inherit; opacity: .75; }
 .shelf.authors .shelf-item { flex-basis: 84px; text-align: center; }
 .shelf.authors .cover.shelfcover { width: 84px; height: 84px; border-radius: 50%; }
 .shelf.authors .t { -webkit-line-clamp: 2; font-size: .85rem; }

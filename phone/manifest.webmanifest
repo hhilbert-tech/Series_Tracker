@@ -1,7 +1,7 @@
 {
-  "name": "Series Tracker",
-  "short_name": "Series",
-  "description": "Know when the next book in your series is announced or released.",
+  "name": "Book Finder",
+  "short_name": "Book Finder",
+  "description": "Find your next book from what you've read and the authors you follow, and know when new ones come out.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
