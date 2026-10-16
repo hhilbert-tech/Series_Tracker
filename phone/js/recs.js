@@ -41,10 +41,28 @@ const fromSeries = (s) => ({ hardcover_book_id: s.hardcover_book_id ?? null, tit
   cover_url: s.cover_url ?? null, rating: s.rating ?? null, users_count: s.users_count ?? 0,
   series: { hardcover_series_id: s.hardcover_series_id, name: s.name, author: s.author ?? null, complete: Boolean(s.complete), position: s.hardcover_book_id ? 1 : null } });
 
-export async function buildRecs(store, client, { genres: maxGenres = MAX_GENRES } = {}) {
+// onProgress(rec) is called after the early sources with a partial list (saved, marked partial) so it can be shown at once.
+export async function buildRecs(store, client, { genres: maxGenres = MAX_GENRES, onProgress = null } = {}) {
   const series = await store.all('series'), authors = await store.all('author');
   const { ids: read } = await readBooks(store);
-  const errors = [], items = [];
+  const errors = [], items = [], old = await getSetting(store, 'recs', null);
+  const save = async (final) => {
+    const seen = new Set(), out = [];
+    for (const it of [...items].sort((a, b) => b.rank - a.rank)) {
+      const k = recKey(it);
+      if (!seen.has(k) && !read.has(it.hardcover_book_id)) { seen.add(k); out.push({ ...it, key: k }); }
+    }
+    // Keep earlier picks this run didn't find again (after the new ones), so a refill or a failed lookup never empties the list.
+    if (old?.v === RECS_VERSION) for (const it of old.items) if (!seen.has(it.key)) { seen.add(it.key); out.push(it); }
+    // If everything failed, back-date the cache so it is retried in ~6 h instead of sitting empty for a week.
+    // A partial save keeps the previous date, so an interrupted build still counts as stale.
+    const at = !final ? (old?.v === RECS_VERSION && !old.partial ? old.at : null)
+      : !out.length && errors.length ? new Date(Date.now() - RECS_TTL_MS + 6 * 36e5).toISOString().slice(0, 19) + 'Z' : nowIso();
+    const rec = { v: RECS_VERSION, at, items: out.slice(0, MAX_ITEMS), errors: [...errors], ...(final ? {} : { partial: true }) };
+    await setSetting(store, 'recs', rec);
+    if (!final && onProgress) try { await onProgress(rec); } catch { /* display only */ }
+    return rec;
+  };
   const fail = (src, e) => { if (e instanceof HardcoverAuthError) throw e; errors.push(`${src}: ${e.message ?? e}`); };
   const seedIds = [...read.keys()];
 
@@ -65,6 +83,7 @@ export async function buildRecs(store, client, { genres: maxGenres = MAX_GENRES 
       items.push({ ...fromInfo(b), kind: 'similar', why: `Similar to ${seed}`, group: `Because you read ${seed}`, rank: T_SIMILAR + Math.round(sc.w * 1000) });
     }
   } catch (e) { fail('similar', e); }
+  if (items.length) await save(false);
 
   // 2. Other series by the authors of series you follow (authors you follow are covered from local data).
   const followedNames = new Set(authors.map((a) => a.name.toLowerCase()));
@@ -73,10 +92,12 @@ export async function buildRecs(store, client, { genres: maxGenres = MAX_GENRES 
     const k = s.author.toLowerCase(); weight.set(k, { name: s.author, w: (weight.get(k)?.w ?? 0) + 1 });
   }
   const top = [...weight.values()].sort((a, b) => b.w - a.w || a.name.localeCompare(b.name)).slice(0, MAX_AUTHORS);
+  const before = items.length;
   if (top.length) try {
     const bySeries = await client.authorSeries(top.map((x) => x.name));
     for (const { name, w } of top) for (const s of bySeries.get(name) ?? []) items.push({ ...fromSeries(s), kind: 'author', why: `More by ${name}`, group: 'More by authors you read', rank: T_AUTHOR + w * 10 });
   } catch (e) { fail('authors', e); }
+  if (items.length > before) await save(false);
 
   // 3. Same subgenres/tags and genres, from the books you've read.
   try {
@@ -90,20 +111,7 @@ export async function buildRecs(store, client, { genres: maxGenres = MAX_GENRES 
       for (const s of await client.popularInGenre(g.slug)) items.push({ ...fromSeries(s), kind: 'genre', why: `Popular in ${g.name}`, group: `Popular in ${g.name}`, rank: cap(s.users_count) });
     }
   } catch (e) { fail('genres', e); }
-
-  const seen = new Set(), out = [];
-  for (const it of items.sort((a, b) => b.rank - a.rank)) {
-    const k = recKey(it);
-    if (!seen.has(k) && !read.has(it.hardcover_book_id)) { seen.add(k); out.push({ ...it, key: k }); }
-  }
-  // Keep earlier picks this run didn't find again (after the new ones), so a refill or a failed lookup never empties the list.
-  const old = await getSetting(store, 'recs', null);
-  if (old?.v === RECS_VERSION) for (const it of old.items) if (!seen.has(it.key)) { seen.add(it.key); out.push(it); }
-  // If everything failed, back-date the cache so it is retried in ~6 h instead of sitting empty for a week.
-  const at = !out.length && errors.length ? new Date(Date.now() - RECS_TTL_MS + 6 * 36e5).toISOString().slice(0, 19) + 'Z' : nowIso();
-  const rec = { v: RECS_VERSION, at, items: out.slice(0, MAX_ITEMS), errors };
-  await setSetting(store, 'recs', rec);
-  return rec;
+  return save(true);
 }
 
 // Released (or undated), unread books by authors you follow, outside the series you already follow; one per series (its earliest).
@@ -138,7 +146,7 @@ export async function loadRecs(store, today = todayIso()) {
       || (it.hardcover_book_id && names.has(norm(it.title, it.author)))) continue;
     seen.add(k); items.push({ ...it, key: k });
   }
-  return { at: cached?.at ?? null, errors: cached?.errors ?? [], items };
+  return { at: cached?.at ?? null, partial: Boolean(cached?.partial), errors: cached?.errors ?? [], items };
 }
 export async function dismissRec(store, key) {
   await setSetting(store, 'recs_dismissed', [...new Set([...(await getSetting(store, 'recs_dismissed', [])), key])]);

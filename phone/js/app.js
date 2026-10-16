@@ -17,6 +17,7 @@ const LABEL = { announced: 'New book', date_changed: 'Date changed', released: '
 const CHECK_EVERY_MS = 12 * 3600 * 1000;
 const $app = document.getElementById('app');
 let store, covers, client, theme = 'system', checking = false, searchSeq = 0, installPrompt = null, afterRender = null;
+let recsBuilding = null, recsError = null;          // the Discover picks build running in this page (if any), and why the last one failed
 const failedCovers = new Set();
 const objectUrls = new Map();
 
@@ -550,24 +551,39 @@ const secHead = (label, href, extra = '') => `<div class="sechead"><h2 class="la
 const shelfItem = ({ href, ck, fb, title, seed, author, line2, x }) => `<li class="shelf-item"><a href="${href}">${img(ck, fb, title, seed, 'cover shelfcover', author)}
   <span class="t">${esc(title)}</span>${line2 ? `<span class="s">${line2}</span>` : ''}</a>${x ?? ''}</li>`;
 
+// Build the Discover picks in the background (one at a time); Discover redraws as partial results arrive and when done.
+function startRecsBuild(opts = {}) {
+  if (recsBuilding) return recsBuilding;
+  recsError = null;
+  const redraw = async () => { if (!location.hash || location.hash === '#/') await route(); };
+  recsBuilding = (async () => {
+    await setSetting(store, 'recs_attempt', nowIso());
+    try { await buildRecs(store, client, { ...opts, onProgress: redraw }); } catch (e) { recsError = msg(e); }
+    recsBuilding = null;
+    await redraw();
+  })();
+  return recsBuilding;
+}
+
 // Home: the book finder. Shelves of picks (similar books, authors you follow, your genres); releases live in their own tab.
 async function viewDiscover() {
   const nSeries = (await store.all('series')).length, nAuthors = (await store.all('author')).length, nBooks = (await store.all('book')).length;
   const hasToken = Boolean(await getSetting(store, 'hc_token', ''));
   const recs = await loadRecs(store);
-  if (hasToken && (nSeries || nAuthors || nBooks) && recsStale(recs) && Date.now() - Date.parse(await getSetting(store, 'recs_attempt', '1970-01-01')) > 6 * 36e5) {
-    afterRender = async () => {                                      // build in the background, then redraw if still on Discover
-      await setSetting(store, 'recs_attempt', nowIso());
-      try { await buildRecs(store, client); } catch (e) { const el = document.getElementById('recs-status'); if (el) el.textContent = 'Picks unavailable: ' + msg(e); return; }
-      if (!location.hash || location.hash === '#/') await route();
-    };
+  // Never built (or interrupted): build now. Built but stale: at most every 6 h, so a failing Hardcover isn't hammered.
+  if (hasToken && (nSeries || nAuthors || nBooks) && recsStale(recs) && !recsBuilding && !recsError
+    && (!recs?.at || Date.now() - Date.parse(await getSetting(store, 'recs_attempt', '1970-01-01')) > 6 * 36e5)) {
+    afterRender = () => { startRecsBuild(); };
   }
+  const building = Boolean(recsBuilding || afterRender);
   if (!nSeries && !nAuthors && !nBooks) return `<div class="pagehead"><h1>Discover</h1></div>
     <section class="panel"><h2>Welcome</h2><p>Tell the app what you've read and which authors you like, and this page finds books like them.</p>
       <p><a class="btn" href="#/more/data">Import your reading history</a> <a class="btn" href="#/search">Search</a></p></section>`;
   const items = recs?.items ?? [];
   const note = !hasToken ? '<p class="meta">Add your Hardcover token (More → Hardcover account) to get books similar to what you read.</p>'
-    : !recs?.at ? '<p class="meta" id="recs-status">Finding books for you…</p>'
+    : building ? `<p class="meta">Finding ${items.length ? 'more ' : ''}books for you…</p>`
+    : recsError ? `<p class="meta">Picks unavailable: ${esc(recsError)}</p><p><button data-click="recs-refresh">Try again</button></p>`
+    : !recs?.at ? `<p class="meta">Books similar to what you've read haven't loaded yet.</p><p><button class="primary" data-click="recs-refresh">Find books now</button></p>`
     : !items.length ? `<p class="meta">No new picks right now.${recs.errors?.length ? ' Some lookups failed: ' + esc(recs.errors[0]) : ''}</p>` : '';
   const shelf = (g) => `${secHead(esc(g.label), g.items.length > 12 ? `#/recs?g=${encodeURIComponent(g.label)}` : '')}<ul class="shelf">${g.items.slice(0, 12).map((r) => shelfItem({
     href: pickHref(r), ck: null, fb: r.cover_url, title: r.title, seed: r.series?.name ?? r.title, author: r.author,
@@ -698,7 +714,7 @@ async function viewMore(sub) {
       ${(k === 'data' && backupDue) || (k === 'account' && !hasToken) ? '<span class="dot" aria-label="needs attention"></span>' : ''}<span class="chev" aria-hidden="true">›</span></a></li>`).join('')}</ul>
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}
-    <p class="meta center">Book Finder · v13</p>`;
+    <p class="meta center">Book Finder · v14</p>`;
   const head = `<p><a class="back" href="#/more">← More</a></p><div class="pagehead"><h1>${page[1]}</h1></div>`;
   if (sub === 'appearance') {
     const shopPref = await getSetting(store, 'store', 'hardcover');
@@ -892,18 +908,19 @@ const clickActions = {
     await dismissRec(store, el.dataset.key);
     if (el.dataset.home) location.hash = '#/'; else await route();
     const left = (await loadRecs(store))?.items.length ?? 0;
-    if (left < 10 && (await getSetting(store, 'hc_token', ''))) {        // running low: widen the search for more, then redraw Discover
-      try { await buildRecs(store, client, { genres: 5 }); if (!location.hash || location.hash === '#/') await route(); } catch { /* keep what is left */ }
-    }
+    if (left < 10 && (await getSetting(store, 'hc_token', ''))) await startRecsBuild({ genres: 5 });   // running low: widen the search for more
   },
   async 'pick-follow-author'(el) {
     const aid = await followAuthor(store, client, { hardcover_author_id: Number(el.dataset.id), name: el.dataset.name });
     toast(`Following ${el.dataset.name}. Their books show in Discover; new ones in Releases.`); location.hash = `#/author/${aid}`;
   },
   async 'recs-refresh'() {
-    toast('Looking for books…', { ms: 0 });
-    const r = await buildRecs(store, client);
-    toast(r.items.length ? `Found ${r.items.length} pick${r.items.length > 1 ? "s" : ""}.` : 'No picks found.' + (r.errors.length ? ' ' + r.errors[0] : ''), { error: !r.items.length && r.errors.length > 0 }); await route();
+    recsError = null;
+    const p = startRecsBuild();
+    await route();                                                   // shows "Finding books for you…"
+    await p;
+    const n = (await loadRecs(store))?.items.length ?? 0;
+    toast(recsError ? `No new picks: ${recsError}` : n ? `${n} pick${n > 1 ? 's' : ''} ready.` : 'No picks found.', { error: Boolean(recsError) });
   },
   async 'sync-hc'() {
     toast('Syncing from Hardcover…', { ms: 0 });

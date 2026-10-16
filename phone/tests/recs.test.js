@@ -163,3 +163,24 @@ test('shelves: groups in rank order; single-book "Because you read" groups fold 
     it('b:5', 'From authors you follow', 'followed')]);
   assert.deepEqual(s.map((g) => [g.label, g.items.map((x) => x.key)]), [['Because you read A', ['b:1', 'b:2']], ['Similar to books you read', ['b:3', 'b:4']], ['From authors you follow', ['b:5']]]);
 });
+
+test('progress: a partial list is saved and reported after "similar", before the slow genre lookups; it still counts as stale', async () => {
+  const store = new MemStore(), client = new FakeClient();
+  const sid = await upsertSeries(store, 1, 'Read Saga', 'Ann Author');
+  await store.put('series_book', { key: `${sid}:1`, series_id: sid, position: 1, hardcover_book_id: 11, title: 'One', release_date: '2010-01-01' });
+  await bumpProgress(store, sid, 1);
+  client.similar[11] = [21]; client.info[21] = { title: 'Near', author: 'N', series: null };
+  client.tags[11] = [{ slug: 'fantasy', name: 'Fantasy', count: 1 }];
+  client.genreSeries.fantasy = [{ hardcover_series_id: 60, name: 'Pop', author: 'P', cover_url: null, complete: false, users_count: 5 }];
+  const seen = [];
+  const rec = await buildRecs(store, client, { onProgress: async (r) => { seen.push([r.partial, r.items.map((i) => i.title), recsStale(await loadRecs(store))]); } });
+  assert.deepEqual(seen, [[true, ['Near'], true]]);
+  assert.deepEqual(rec.items.map((i) => i.title), ['Near', 'Pop']);
+  assert.equal(rec.partial, undefined); assert.equal(recsStale(rec), false);
+});
+
+test('Hardcover client: a request that hangs times out with a clear error', async () => {
+  const c = new HardcoverClient({ getToken: () => 't', limiter: { async acquire() {} }, timeoutMs: 30,
+    fetch: (u, init) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted')))) });
+  await assert.rejects(() => c.gql('query { x }'), /took too long/);
+});

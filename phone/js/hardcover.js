@@ -63,8 +63,8 @@ const seriesInfo = (s, position = null) => ({
 const bookSeriesList = (bs) => (bs ?? []).filter((x) => x.series).map((x) => seriesInfo(x.series, x.position));
 
 export class HardcoverClient {
-  constructor({ getToken, fetch: f = (...a) => globalThis.fetch(...a), limiter = new RateLimiter(50, 60000), sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
-    this._sleep = sleep; this._blockedUntil = 0;
+  constructor({ getToken, fetch: f = (...a) => globalThis.fetch(...a), limiter = new RateLimiter(50, 60000), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), timeoutMs = 25000 }) {
+    this._sleep = sleep; this._blockedUntil = 0; this._timeoutMs = timeoutMs;
     this._getToken = getToken; this._fetch = f; this._limiter = limiter; this._cache = new Map();
   }
   toString() { return 'HardcoverClient()'; }
@@ -79,10 +79,19 @@ export class HardcoverClient {
       await this._sleep(wait);
     }
     await this._limiter.acquire();
+    // A request that hangs would stall everything waiting on it (e.g. the Discover picks): give up after a while.
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), this._timeoutMs);
+    const timedOut = () => new HardcoverError('Hardcover took too long to answer. Try again later.');
+    try { return await this._send(auth, query, variables, ctl.signal); }
+    catch (e) { throw ctl.signal.aborted ? timedOut() : e; }
+    finally { clearTimeout(timer); }
+  }
+
+  async _send(auth, query, variables, signal) {
     let r;
     try {
       r = await this._fetch(URL_, { method: 'POST', headers: { authorization: auth, 'content-type': 'application/json' },
-        body: JSON.stringify({ query, variables }) });
+        body: JSON.stringify({ query, variables }), signal });
     } catch {
       throw new HardcoverError('Could not reach Hardcover (offline, or the browser blocked the request).');
     }
