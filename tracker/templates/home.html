@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>You're following {{ n_following }} series{% if n_muted %} <small>({{ n_muted }} muted)</small>{% endif %}</h1>
+
+<details {% if not series %}open{% endif %}>
+  <summary>Import your reading history</summary>
+  <form class="stack" method="post" action="/import/goodreads" enctype="multipart/form-data">
+    <label>Goodreads export (goodreads_library_export.csv)
+      <input type="file" name="file" accept=".csv,text/csv" required></label>
+    <button class="primary">Import Goodreads CSV</button>
+  </form>
+  <form class="stack" method="post" action="/import/hardcover" style="margin-top:1rem">
+    <label>Hardcover API token <small>(optional; used for this import only and never stored — or set HARDCOVER_TOKEN)</small>
+      <input type="password" name="token" autocomplete="off"></label>
+    <button>Import from Hardcover</button>
+  </form>
+</details>
+
+{% if series %}
+<ul class="cards">
+  {% for s in series %}
+  <li class="card {% if s.muted %}is-muted{% endif %}">
+    <img class="cover" src="{{ cover(s.cover_path, s.name, s.name) }}" alt="Cover of {{ s.name }}" width="60" height="90" loading="lazy">
+    <div>
+      <h2><a href="/series/{{ s.id }}">{{ s.name }}</a>{% if s.muted %} <span class="badge">Muted</span>{% endif %}</h2>
+      <p class="meta">{{ s.author or 'Unknown author' }} · read up to #{{ s.max_read | pos }}</p>
+      <p>{% if s.next %}Next: #{{ s.next.position | pos }} {{ s.next.title }} — {{ s.next.release_date or 'date TBA' }}
+         {% elif s.last_checked_at %}No unread book announced yet{% else %}Not checked yet{% endif %}</p>
+      <form method="post" action="/series/{{ s.id }}/mute"><button>{{ 'Unmute' if s.muted else 'Mute' }}</button></form>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>Nothing followed yet. Import your history above, or <a href="/search">search</a> for a series.</p>
+{% endif %}
+{% endblock %}

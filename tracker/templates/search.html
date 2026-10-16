@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Search · Series Tracker{% endblock %}
+{% block content %}
+<h1>Search</h1>
+<form role="search" method="get" action="/search" class="inline">
+  <label class="sr" for="q">Title, author, series or ISBN</label>
+  <input id="q" type="search" name="q" value="{{ q }}" placeholder="Title, author, series or ISBN" size="36" autofocus>
+  <button class="primary">Search</button>
+</form>
+<div id="results" aria-live="polite">{% include "_results.html" %}</div>
+{% endblock %}
