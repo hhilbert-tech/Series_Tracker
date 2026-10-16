@@ -31,6 +31,8 @@ jobs:
         working-directory: phone
         run: npm test
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true   # create the Pages site (Actions mode) if it does not exist yet
       - uses: actions/upload-pages-artifact@v3
         with:
           path: phone
