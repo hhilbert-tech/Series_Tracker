@@ -186,6 +186,29 @@ async function viewBook(sid, position) {
     <div id="book-more"><p class="meta">Loading details…</p></div>`;
 }
 
+async function viewAuthorBook(aid, bid) {
+  aid = Number(aid); bid = Number(bid);
+  const a = await store.get('author', aid), b = await store.get('author_book', `${aid}:${bid}`);
+  if (!a || !b) return '<p>No such book. <a href="#/following">Back</a></p>';
+  const w = when(b.release_date);
+  afterRender = async () => {
+    const box = document.getElementById('book-more');
+    if (!box) return;
+    try {
+      const d = await client.bookDetails(bid);
+      box.innerHTML = [d.pages ? `<p class="meta">${d.pages} pages</p>` : '',
+        d.description ? `<p class="desc">${esc(d.description).replace(/\n+/g, '</p><p class="desc">')}</p>` : '<p class="meta">No description on Hardcover.</p>'].join('');
+    } catch (e) { box.innerHTML = `<p class="meta">Details unavailable: ${esc(msg(e))}</p>`; }
+  };
+  return `<p><a class="back" href="#/author/${aid}">← ${esc(a.name)}</a></p>
+    <div class="hero">${img(null, b.cover_url, b.title, a.name, 'cover big')}
+      <div class="body"><h1>${esc(b.title)}</h1>
+        <p class="meta">${esc(a.name)}</p>
+        ${b.series_name ? `<p class="meta">${esc(b.series_name)}${b.series_position != null ? ` · #${pos(b.series_position)}` : ''}</p>` : ''}
+        <p>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></p></div></div>
+    <div id="book-more"><p class="meta">Loading details…</p></div>`;
+}
+
 async function viewAuthor(id) {
   const a = await store.get('author', Number(id));
   if (!a) return '<p>No such author. <a href="#/following">Back</a></p>';
@@ -207,7 +230,7 @@ async function viewAuthor(id) {
   const newest = (g) => g.books.map((b) => b.release_date ?? '9999').sort().pop();
   const list = [...groups.values()].sort((x, y) => (+y.books.some(isUp) - +x.books.some(isUp)) || newest(y).localeCompare(newest(x)) || (x.name ?? '').localeCompare(y.name ?? ''));
   const row = (b, withPos) => { const w = when(b.release_date, today); return `<li>${img(null, b.cover_url, b.title, a.name, 'cover small')}
-    <div class="grow"><strong>${withPos && b.series_position != null ? `<span class="num">#${pos(b.series_position)}</span> ` : ''}${esc(b.title)}</strong><br>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date, today))}</span></div></li>`; };
+    <div class="grow"><a class="booklink" href="#/abook/${a.hardcover_author_id}/${b.hardcover_book_id}">${withPos && b.series_position != null ? `<span class="num">#${pos(b.series_position)}</span> ` : ''}${esc(b.title)}</a><br>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date, today))}</span></div></li>`; };
   const section = (g) => {
     const mine = followed.get(g.id), cover = g.books.find((b) => b.cover_url)?.cover_url ?? '';
     g.books.sort((x, y) => (x.series_position ?? 1e9) - (y.series_position ?? 1e9));
@@ -468,7 +491,7 @@ async function viewMore() {
     <section class="panel"><h2>Hardcover fields</h2>
       <p class="meta">The app's Hardcover queries were written from the public docs. This compares them with the live schema.</p>
       <p><button data-click="verify">Verify Hardcover fields</button></p><pre class="out" id="verify-out"></pre>
-      <p class="meta">App version: author grouping (v5)</p></section>
+      <p class="meta">App version: book info on author page (v6)</p></section>
 
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}`;
@@ -479,10 +502,10 @@ async function route() {
   const [path, qs = ''] = location.hash.replace(/^#/, '').split('?');
   const params = new URLSearchParams(qs);
   const [, seg, arg] = path.split('/');
-  const tab = { '': 'home', upcoming: 'home', following: 'following', series: 'following', book: 'following', author: 'following', search: 'search', updates: 'updates' }[seg ?? ''] ?? 'more';
+  const tab = { '': 'home', upcoming: 'home', following: 'following', series: 'following', book: 'following', author: 'following', abook: 'following', search: 'search', updates: 'updates' }[seg ?? ''] ?? 'more';
   let html;
   try {
-    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), upcoming: viewUpcoming, following: viewFollowing, search: () => viewSearch(params), updates: viewUpdates,
+    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), abook: () => viewAuthorBook(arg, path.split('/')[3]), upcoming: viewUpcoming, following: viewFollowing, search: () => viewSearch(params), updates: viewUpdates,
       manual: viewManual, review: () => viewReview(params), more: viewMore }[seg ?? ''] ?? viewHome)();
   } catch (e) { html = `<p class="error">${esc(msg(e))}</p>`; }
   $app.innerHTML = html;
