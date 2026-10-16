@@ -18,3 +18,10 @@ test('fmtDate and when mark estimates', () => {
   assert.deepEqual(when('2026-09-29', T), { text: 'Out now', tone: 'ok' });
   assert.deepEqual(when(null, T), { text: 'Date TBA', tone: 'tba' });
 });
+
+import { storeLink } from '../js/format.js';
+test('storeLink builds a search link for the chosen store and defaults to Hardcover', () => {
+  assert.ok(storeLink('amazon', 'Dune', 'F. Herbert').startsWith('https://www.amazon.es/s?k=Dune%20F.%20Herbert'));
+  assert.ok(storeLink('kobo', 'Dune').includes('kobo.com'));
+  assert.ok(storeLink(undefined, 'Dune').startsWith('https://hardcover.app/search?q=Dune'));
+});

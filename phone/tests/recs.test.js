@@ -80,6 +80,6 @@ test('Hardcover client: authorSeries is one aliased request and filters other au
   assert.deepEqual(await c.bookTags([11, 12, 13]), [
     { id: 11, genres: [{ slug: 'fantasy', name: 'Fantasy', count: 4 }] }, { id: 12, genres: [{ slug: 'horror', name: 'Horror', count: 1 }] }, { id: 13, genres: [] }]);
   const g = await c.popularInGenre('fantasy');
-  assert.deepEqual(g, [{ hardcover_series_id: 5, name: 'S', author: 'A', cover_url: 'u', complete: true, users_count: 7 }]);
+  assert.deepEqual(g, [{ hardcover_series_id: 5, name: 'S', author: 'A', cover_url: 'u', complete: true, users_count: 7, rating: null }]);
   assert.deepEqual(bodies[2].variables, { tag: { Genre: [{ tagSlug: 'fantasy' }] } });
 });

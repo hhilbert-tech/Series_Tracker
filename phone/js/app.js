@@ -3,9 +3,9 @@
 import { openIdbStore } from './store-idb.js';
 import { HardcoverClient, HardcoverError } from './hardcover.js';
 import { CoverCache, placeholderUri } from './covers.js';
-import { getSetting, setSetting, todayIso, sbKey, notifying, maxRead, setProgress, removeSeries, unremoveSeries, lastReleased, nowIso } from './db.js';
+import { getSetting, setSetting, todayIso, sbKey, notifying, maxRead, setProgress, removeSeries, unremoveSeries, lastReleased, nowIso, isRead, toggleRead } from './db.js';
 import { followAuthor, removeAuthor, refreshAuthorMeta } from './authors.js';
-import { fmtDate, when } from './format.js';
+import { fmtDate, when, STORES, storeLink } from './format.js';
 import { buildRecs, loadRecs, dismissRec, recsStale } from './recs.js';
 import { runCheck, updates, pendingEvents, markAllSeen, dismissUpdate, dismissAllUpdates } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
@@ -29,7 +29,7 @@ const chip = (w, extra = '') => `<span class="chip ${w.tone} ${extra}">${esc(w.t
 const menu = (label, items) => `<details class="menu"><summary aria-label="Actions for ${esc(label)}">⋯</summary><div class="menu-items">${items}</div></details>`;
 function progress(series_books, read) {
   const whole = series_books.filter((r) => Number.isInteger(r.position));
-  return { total: whole.length, read: whole.filter((r) => r.position <= read).length };
+  return { total: whole.length, read: whole.filter((r) => isRead(r, read)).length };
 }
 const progressHtml = (p) => (p.total ? `<div class="progress"><div class="bar" role="img" aria-label="${p.read} of ${p.total} read"><i style="width:${Math.round(100 * p.read / p.total)}%"></i></div><span class="meta">${p.read} of ${p.total} read</span></div>` : '');
 const msg = (e) => (e instanceof HardcoverError ? e.message : 'Something went wrong: ' + (e?.message ?? e));
@@ -55,15 +55,20 @@ async function setTheme(t) {
 
 // ---- covers -------------------------------------------------------------------------------
 // key: cache key (or null); fb: remote URL used to fill the cache once, or shown directly if the browser blocks the download.
-function img(key, fb, title, seed, cls = 'cover') {
+function img(key, fb, title, seed, cls = 'cover', author = '') {
   return `<img class="${cls}" src="${esc(placeholderUri(title, seed))}" alt="Cover of ${esc(title)}" loading="lazy" `
-    + `data-ck="${esc(key ?? '')}" data-fb="${esc(fb ?? '')}" data-title="${esc(title)}" data-seed="${esc(seed)}">`;
+    + `data-ck="${esc(key ?? '')}" data-fb="${esc(fb ?? '')}" data-title="${esc(title)}" data-seed="${esc(seed)}" data-author="${esc(author ?? '')}">`;
 }
 async function hydrateCovers(root = $app) {
   await Promise.all([...root.querySelectorAll('img[data-ck]')].map(async (el) => {
     const { ck, fb } = el.dataset;
     if (!ck && !fb) return;
     const key = ck || `remote-${fb}`;
+    const byTitle = async () => {                       // no image from any source: try Open Library by title
+      const k = await covers.lookupByTitle(key, el.dataset.title, el.dataset.author || null);
+      const r2 = k && await store.get('covers', k);
+      if (r2?.blob) { if (!objectUrls.has(key)) objectUrls.set(key, URL.createObjectURL(r2.blob)); el.onerror = null; el.src = objectUrls.get(key); }
+    };
     try {
       let rec = await store.get('covers', key);
       if (!rec && fb && !failedCovers.has(key)) {
@@ -74,9 +79,9 @@ async function hydrateCovers(root = $app) {
         if (!objectUrls.has(key)) objectUrls.set(key, URL.createObjectURL(rec.blob));
         el.src = objectUrls.get(key);
       } else if (fb && !rec) {
-        el.onerror = () => { el.onerror = null; el.src = placeholderUri(el.dataset.title, el.dataset.seed); };
+        el.onerror = () => { el.src = placeholderUri(el.dataset.title, el.dataset.seed); el.onerror = null; byTitle().catch(() => {}); };
         el.src = fb;                                    // fallback: browser HTTP cache
-      }
+      } else if (!rec?.blob) await byTitle();
     } catch { /* keep placeholder */ }
   }));
 }
@@ -86,7 +91,7 @@ function seriesCard(s, read, next, prog) {
   const w = next ? when(next.release_date) : null;
   return `<li class="card ${s.muted ? 'is-muted' : ''}">
     <a class="cardlink" href="#/series/${s.id}">
-      ${img(s.cover_key ?? `series-${s.id}`, s.cover_key ? '' : s.cover_url, s.name, s.name)}
+      ${img(s.cover_key ?? `series-${s.id}`, s.cover_key ? '' : s.cover_url, s.name, s.name, 'cover', s.author)}
       <div class="body">
         <h2>${esc(s.name)}${s.muted ? ' <span class="badge">Muted</span>' : ''}</h2>
         <p class="meta">${esc(s.author ?? 'Unknown author')}</p>
@@ -105,7 +110,7 @@ async function viewFollowing() {
   const cards = [];
   for (const s of series) {
     const read = await maxRead(store, s.id), mine = sbs.filter((r) => r.series_id === s.id);
-    const next = mine.filter((r) => Number.isInteger(r.position) && r.position > read).sort((a, b) => a.position - b.position)[0];
+    const next = mine.filter((r) => Number.isInteger(r.position) && r.position > read && r.read !== true).sort((a, b) => a.position - b.position)[0];
     cards.push(seriesCard(s, read, next, progress(mine, read)));
   }
   const muted = series.filter((s) => s.muted).length;
@@ -131,7 +136,7 @@ async function viewSeries(id) {
   const books = (await store.all('series_book')).filter((r) => r.series_id === s.id).sort((a, b) => a.position - b.position);
   return `<p><a class="back" href="#/following">← Following</a></p>
     <div class="hero">
-      ${img(s.cover_key ?? `series-${s.id}`, s.cover_key ? '' : s.cover_url, s.name, s.name, 'cover big')}
+      ${img(s.cover_key ?? `series-${s.id}`, s.cover_key ? '' : s.cover_url, s.name, s.name, 'cover big', s.author)}
       <div class="body"><h1>${esc(s.name)}${s.muted ? ' <span class="badge">Muted</span>' : ''}</h1>
         <p class="meta">${esc(s.author ?? 'Unknown author')}${s.author ? ` · <a href="#/search?q=${encodeURIComponent(s.author)}">follow author</a>` : ''}${s.complete ? ' · complete' : ''}</p>
         ${progressHtml(progress(books, read))}
@@ -141,16 +146,16 @@ async function viewSeries(id) {
         ${read ? `<button data-click="read-none" data-id="${s.id}">Reset progress</button>` : ''}
         <button class="danger" data-click="remove" data-id="${s.id}" data-name="${esc(s.name)}" data-home="1">Remove</button>`)}</div>
     ${books.length ? `<ul class="rows">${books.map((b) => {
-      const isRead = b.position <= read, w = when(b.release_date, today);
+      const done = isRead(b, read), w = when(b.release_date, today);
       const unreleased = w.tone !== 'ok';
-      const btn = isRead
-        ? (b.position === read ? `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${prevPos(books, b.position)}">Undo</button>` : '')
+      const earlierUnread = books.some((x) => x.position < b.position && !isRead(x, read));
+      const btn = done ? `<button class="small" data-click="toggle-read" data-id="${s.id}" data-pos="${b.position}">Unread</button>`
         : unreleased ? notifyBtn(s.id, b, read)
-        : `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read to here</button>`;
-      return `<li class="${isRead ? 'read' : ''}">
-        ${img(b.cover_key ?? `sb-${s.id}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover small')}
+        : `<button class="small primary" data-click="toggle-read" data-id="${s.id}" data-pos="${b.position}">Mark read</button>${earlierUnread ? `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read to here</button>` : ''}`;
+      return `<li class="${done ? 'read' : ''}">
+        ${img(b.cover_key ?? `sb-${s.id}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover small', s.author)}
         <div class="grow"><a class="booklink" href="#/book/${s.id}/${b.position}"><span class="num">#${pos(b.position)}</span> ${esc(b.title)}</a><br>
-          ${isRead ? '<span class="chip read">✓ Read</span>' : chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></div>${btn}</li>`;
+          ${done ? '<span class="chip read">✓ Read</span>' : chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></div><div class="row-btns">${btn}</div></li>`;
     }).join('')}</ul>` : '<p>No books fetched yet. Use “Check now” in More.</p>'}`;
 }
 
@@ -158,31 +163,33 @@ async function viewBook(sid, position) {
   sid = Number(sid); position = Number(position);
   const s = await store.get('series', sid), b = await store.get('series_book', sbKey(sid, position));
   if (!s || !b) return '<p>No such book. <a href="#/following">Back</a></p>';
-  const read = await maxRead(store, sid), isRead = b.position <= read, w = when(b.release_date);
+  const read = await maxRead(store, sid), done = isRead(b, read), w = when(b.release_date);
   const all = (await store.all('series_book')).filter((r) => r.series_id === sid);
-  const btn = isRead
-    ? (b.position === read ? `<button data-click="read-to" data-id="${sid}" data-pos="${prevPos(all, b.position)}">Undo read</button>` : '')
+  const earlierUnread = all.some((x) => x.position < b.position && !isRead(x, read));
+  const shop = await getSetting(store, 'store', 'hardcover');
+  const btn = done ? `<button data-click="toggle-read" data-id="${sid}" data-pos="${b.position}">Mark unread</button>`
     : w.tone !== 'ok' ? notifyBtn(sid, b, read)
-    : `<button class="primary" data-click="read-to" data-id="${sid}" data-pos="${b.position}">Read up to here</button>`;
+    : `<button class="primary" data-click="toggle-read" data-id="${sid}" data-pos="${b.position}">Mark read</button>${earlierUnread ? `<button data-click="read-to" data-id="${sid}" data-pos="${b.position}">Read up to here</button>` : ''}`;
+  const getIt = done ? '' : `<a class="btn" target="_blank" rel="noopener" href="${esc(storeLink(shop, b.title, s.author ?? ''))}">${w.tone === 'ok' ? 'Get it' : 'Pre-order'} · ${STORES[shop] ?? 'Hardcover'} ↗</a>`;
   afterRender = async () => {
     const box = document.getElementById('book-more');
     if (!box) return;
     if (!b.hardcover_book_id) { box.textContent = ''; return; }
     try {
       const d = await client.bookDetails(b.hardcover_book_id);
-      const bits = [d.pages ? `<p class="meta">${d.pages} pages</p>` : '',
+      const bits = [d.pages || d.rating ? `<p class="meta">${[d.rating ? `★ ${d.rating.toFixed(1)}` : '', d.pages ? `${d.pages} pages` : ''].filter(Boolean).join(' · ')}</p>` : '',
         d.description ? `<p class="desc">${esc(d.description).replace(/\n+/g, '</p><p class="desc">')}</p>` : '<p class="meta">No description on Hardcover.</p>'];
       box.innerHTML = bits.join('');
     } catch (e) { box.innerHTML = `<p class="meta">Details unavailable: ${esc(msg(e))}</p>`; }
   };
   return `<p><a class="back" href="#/series/${sid}">← ${esc(s.name)}</a></p>
     <div class="hero">
-      ${img(b.cover_key ?? `sb-${sid}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover big')}
+      ${img(b.cover_key ?? `sb-${sid}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover big', s.author)}
       <div class="body"><h1>${esc(b.title)}</h1>
         <p class="meta">${esc(s.author ?? 'Unknown author')}${s.author ? ` · <a href="#/search?q=${encodeURIComponent(s.author)}">follow author</a>` : ''}</p>
         <p class="meta">${esc(s.name)} · #${pos(b.position)}</p>
-        <p>${isRead ? '<span class="chip read">✓ Read</span> ' : ''}${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></p></div></div>
-    ${btn ? `<div class="actions">${btn}</div>` : ''}
+        <p>${done ? '<span class="chip read">✓ Read</span> ' : ''}${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></p></div></div>
+    ${btn || getIt ? `<div class="actions">${btn}${getIt}</div>` : ''}
     <div id="book-more"><p class="meta">Loading details…</p></div>`;
 }
 
@@ -201,7 +208,7 @@ async function viewAuthorBook(aid, bid) {
     } catch (e) { box.innerHTML = `<p class="meta">Details unavailable: ${esc(msg(e))}</p>`; }
   };
   return `<p><a class="back" href="#/author/${aid}">← ${esc(a.name)}</a></p>
-    <div class="hero">${img(null, b.cover_url, b.title, a.name, 'cover big')}
+    <div class="hero">${img(null, b.cover_url, b.title, a.name, 'cover big', a.name)}
       <div class="body"><h1>${esc(b.title)}</h1>
         <p class="meta">${esc(a.name)}</p>
         ${b.series_name ? `<p class="meta">${esc(b.series_name)}${b.series_position != null ? ` · #${pos(b.series_position)}` : ''}</p>` : ''}
@@ -221,7 +228,7 @@ async function viewRec(id) {
       const books = await client.seriesBooks(id), first = books[0];
       let d = null;
       if (first) { try { d = await client.bookDetails(first.hardcover_book_id); } catch { /* list still useful */ } }
-      box.innerHTML = `${d?.description ? `<p class="desc">${esc(d.description).replace(/\n+/g, '</p><p class="desc">')}</p>` : ''}
+      box.innerHTML = `${d?.rating ? `<p class="meta">★ ${d.rating.toFixed(1)} on Hardcover${d.pages ? ` · book 1 is ${d.pages} pages` : ''}</p>` : ''}${d?.description ? `<p class="desc">${esc(d.description).replace(/\n+/g, '</p><p class="desc">')}</p>` : ''}
         ${books.length ? `<h2 class="label">${books.length} book${books.length > 1 ? 's' : ''}</h2><ul class="rows">${books.map((b) => { const w = when(b.release_date, today);
           return `<li>${img(null, b.cover_url, b.title, r.name, 'cover small')}<div class="grow"><strong><span class="num">#${pos(b.position)}</span> ${esc(b.title)}</strong><br>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date, today))}</span></div></li>`; }).join('')}</ul>` : '<p class="meta">No books listed on Hardcover.</p>'}`;
     } catch (e) { box.innerHTML = `<p class="meta">Details unavailable: ${esc(msg(e))}</p>`; }
@@ -255,8 +262,9 @@ async function viewAuthor(id) {
   for (const b of slots.values()) (groups.get(b.series_id) ?? groups.set(b.series_id, { id: b.series_id, name: b.series_name, books: [] }).get(b.series_id)).books.push(b);
   const newest = (g) => g.books.map((b) => b.release_date ?? '9999').sort().pop();
   const list = [...groups.values()].sort((x, y) => (+y.books.some(isUp) - +x.books.some(isUp)) || newest(y).localeCompare(newest(x)) || (x.name ?? '').localeCompare(y.name ?? ''));
-  const row = (b, withPos) => { const w = when(b.release_date, today); return `<li>${img(null, b.cover_url, b.title, a.name, 'cover small')}
-    <div class="grow"><a class="booklink" href="#/abook/${a.hardcover_author_id}/${b.hardcover_book_id}">${withPos && b.series_position != null ? `<span class="num">#${pos(b.series_position)}</span> ` : ''}${esc(b.title)}</a><br>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date, today))}</span></div></li>`; };
+  const row = (b, withPos) => { const w = when(b.release_date, today); return `<li>${img(null, b.cover_url, b.title, a.name, 'cover small', a.name)}
+    <div class="grow"><a class="booklink" href="#/abook/${a.hardcover_author_id}/${b.hardcover_book_id}">${withPos && b.series_position != null ? `<span class="num">#${pos(b.series_position)}</span> ` : ''}${esc(b.title)}</a><br>${b.read ? '<span class="chip read">✓ Read</span>' : chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date, today))}</span></div>
+    ${b.read || w.tone === 'ok' ? `<div class="row-btns"><button class="small ${b.read ? '' : 'primary'}" data-click="toggle-aread" data-aid="${a.hardcover_author_id}" data-bid="${b.hardcover_book_id}">${b.read ? 'Unread' : 'Mark read'}</button></div>` : ''}</li>`; };
   const section = (g) => {
     const mine = followed.get(g.id), cover = g.books.find((b) => b.cover_url)?.cover_url ?? '';
     g.books.sort((x, y) => (x.series_position ?? 1e9) - (y.series_position ?? 1e9));
@@ -342,15 +350,16 @@ async function collectUpcoming(today) {
   const authors = new Map((await store.all('author')).map((a) => [a.hardcover_author_id, a]));
   const sbs = (await store.all('series_book')).filter((r) => series.get(r.series_id) && !series.get(r.series_id).muted);
   const inSeries = new Set(sbs.map((r) => r.hardcover_book_id));
-  const items = [], readOf = new Map();
+  const items = [], readOf = new Map(), shop = await getSetting(store, 'store', 'hardcover');
   for (const id of series.keys()) readOf.set(id, await maxRead(store, id));
   for (const r of sbs) {
     if (!r.release_date || r.release_date.slice(0, 10) < cutoff || r.dismissed) continue;
     const s = series.get(r.series_id), out = r.release_date.slice(0, 10) <= today;
-    if (out && r.position <= readOf.get(r.series_id)) continue;                 // released and already read: nothing to do
+    if (out && isRead(r, readOf.get(r.series_id))) continue;                 // released and already read: nothing to do
     items.push({ date: r.release_date.slice(0, 10), title: `#${pos(r.position)} ${r.title}`, sub: s.name, href: `#/book/${r.series_id}/${r.position}`,
       ck: r.cover_key ?? `sb-${r.series_id}-${r.position}`, fb: r.cover_key ? '' : r.cover_url, seed: s.name,
-      actions: out ? `<button class="small" data-click="read-to" data-id="${r.series_id}" data-pos="${r.position}">Mark read</button>
+      actions: out ? `<button class="small" data-click="toggle-read" data-id="${r.series_id}" data-pos="${r.position}">Mark read</button>
+        <a class="btn small" target="_blank" rel="noopener" href="${esc(storeLink(shop, r.title, s.author ?? ''))}">Get it ↗</a>
         <button class="small" data-click="dismiss" data-kind="series" data-id="${r.series_id}" data-pos="${r.position}">Dismiss</button>` : '' });
   }
   for (const r of await store.all('author_book')) {
@@ -364,7 +373,7 @@ async function collectUpcoming(today) {
 }
 function upcomingRow(it, today) {
   const w = when(it.date, today);
-  return `<li>${img(it.ck, it.fb, it.title, it.seed, 'cover small')}<div class="grow"><a class="booklink" href="${it.href}">${esc(it.title)}</a><br>
+  return `<li>${img(it.ck, it.fb, it.title, it.seed, 'cover small', it.author)}<div class="grow"><a class="booklink" href="${it.href}">${esc(it.title)}</a><br>
     <span class="meta">${esc(it.sub)}</span><br>${chip(w)} <span class="meta">${esc(fmtDate(it.date, today))}</span>
     ${it.actions ? `<div class="row-actions">${it.actions}</div>` : ''}</div></li>`;
 }
@@ -389,9 +398,9 @@ async function viewUpcoming() {
 }
 
 const recCard = (r) => `<li class="card has-actions">
-  <a class="cardlink" href="#/rec/${r.hardcover_series_id}">${img(null, r.cover_url, r.name, r.name)}
+  <a class="cardlink" href="#/rec/${r.hardcover_series_id}">${img(null, r.cover_url, r.name, r.name, 'cover', r.author)}
     <div class="body"><h2>${esc(r.name)}</h2><p class="meta">${esc(r.author ?? 'Unknown author')}</p>
-      <p><span class="chip ${r.kind === 'author' ? 'near' : ''}">${esc(r.why)}</span></p></div></a>
+      <p><span class="chip ${r.kind === 'author' ? 'near' : ''}">${esc(r.why)}</span>${r.rating ? ` <span class="chip">★ ${r.rating.toFixed(1)}</span>` : ''}</p></div></a>
   <div class="card-actions"><button class="small primary" data-click="rec-follow" data-hc="${r.hardcover_series_id}" data-name="${esc(r.name)}" data-author="${esc(r.author ?? '')}" data-cover="${esc(r.cover_url ?? '')}" data-complete="${r.complete ? 1 : ''}">Follow</button>
     <button class="small" data-click="rec-dismiss" data-hc="${r.hardcover_series_id}">Not interested</button></div></li>`;
 
@@ -399,11 +408,26 @@ async function viewHome() {
   const today = todayIso();
   const { items } = await collectUpcoming(today);
   const out = items.filter((i) => i.date <= today), soon = items.filter((i) => i.date > today);
+  const shop = await getSetting(store, 'store', 'hardcover'), shown = new Set(out.map((i) => i.href)), nextUp = [];
+  const allSb = await store.all('series_book');
+  for (const s of (await store.all('series')).filter((x) => !x.muted).sort((x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: 'base' }))) {
+    const read = await maxRead(store, s.id), rows = allSb.filter((r) => r.series_id === s.id).sort((x, y) => x.position - y.position);
+    if (!rows.some((r) => isRead(r, read))) continue;                      // only series you have started
+    const n = rows.find((r) => Number.isInteger(r.position) && !isRead(r, read) && r.release_date && r.release_date.slice(0, 10) <= today);
+    if (!n || shown.has(`#/book/${s.id}/${n.position}`)) continue;
+    nextUp.push({ date: n.release_date.slice(0, 10), title: `#${pos(n.position)} ${n.title}`, sub: s.name, href: `#/book/${s.id}/${n.position}`, ck: n.cover_key ?? `sb-${s.id}-${n.position}`,
+      fb: n.cover_key ? '' : n.cover_url, seed: s.name, author: s.author,
+      actions: `<button class="small primary" data-click="toggle-read" data-id="${s.id}" data-pos="${n.position}">Mark read</button>
+        <a class="btn small" target="_blank" rel="noopener" href="${esc(storeLink(shop, n.title, s.author ?? ''))}">Get it ↗</a>` });
+  }
   const unseen = (await pendingEvents(store)).length;
   const nSeries = (await store.all('series')).length, nAuthors = (await store.all('author')).length;
   const hasToken = Boolean(await getSetting(store, 'hc_token', ''));
   const backupDue = (nSeries || nAuthors) && (Date.now() - Date.parse((await getSetting(store, 'last_backup', null)) ?? (await getSetting(store, 'first_seen', nowIso())))) > 30 * 864e5;
   const recs = await loadRecs(store);
+  const sort = await getSetting(store, 'recs_sort', 'popular');
+  if (recs) recs.items = [...recs.items].sort(sort === 'rating' ? (x, y) => (y.rating ?? 0) - (x.rating ?? 0) || y.rank - x.rank
+    : sort === 'authors' ? (x, y) => (+(y.kind === 'author') - +(x.kind === 'author')) || y.rank - x.rank : (x, y) => y.rank - x.rank);
   const recsNote = !hasToken ? '<p class="meta">Add your Hardcover token (More) to get recommendations.</p>'
     : !nSeries && !nAuthors ? '<p class="meta">Follow a series or author and suggestions will appear here.</p>'
     : !recs ? '<p class="meta" id="recs-status">Finding suggestions…</p>'
@@ -422,7 +446,9 @@ async function viewHome() {
     ${out.length ? `<h2 class="label">Just out</h2><ul class="rows">${out.slice(0, 4).map((it) => upcomingRow(it, today)).join('')}</ul>` : ''}
     ${soon.length ? `<h2 class="label">Coming up</h2><ul class="rows">${soon.slice(0, 5).map((it) => upcomingRow(it, today)).join('')}</ul>` : ''}
     ${items.length ? '<p><a href="#/upcoming">See all upcoming →</a></p>' : ''}
-    ${nSeries || nAuthors ? `<h2 class="label">Recommended for you</h2>${recs?.items.length ? `<ul class="cards">${recs.items.slice(0, 8).map(recCard).join('')}</ul>` : ''}${recsNote}
+    ${nextUp.length ? `<h2 class="label">Next to read</h2><ul class="rows">${nextUp.slice(0, 5).map((it) => upcomingRow(it, today)).join('')}</ul>${nextUp.length > 5 ? `<p class="meta">${nextUp.length - 5} more series with a book waiting.</p>` : ''}` : ''}
+    ${nSeries || nAuthors ? `<h2 class="label">Recommended for you</h2>
+      ${recs?.items.length > 1 ? `<div class="seg" role="group" aria-label="Sort suggestions">${[['popular', 'Popular'], ['rating', 'Top rated'], ['authors', 'My authors']].map(([k, v]) => `<button class="small" data-click="recs-sort" data-value="${k}" aria-pressed="${sort === k}">${v}</button>`).join('')}</div>` : ''}${recs?.items.length ? `<ul class="cards">${recs.items.slice(0, 8).map(recCard).join('')}</ul>` : ''}${recsNote}
       ${hasToken && recs ? '<p><button class="small" data-click="recs-refresh">Refresh suggestions</button></p>' : ''}` : ''}`;
 }
 
@@ -481,6 +507,7 @@ async function viewReview(params) {
 }
 
 async function viewMore() {
+  const shopPref = await getSetting(store, 'store', 'hardcover');
   const hasToken = Boolean(await getSetting(store, 'hc_token', ''));
   const last = await getSetting(store, 'last_check', null);
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
@@ -489,6 +516,9 @@ async function viewMore() {
     <section class="panel"><h2>Theme</h2><div class="seg" role="group" aria-label="Theme">
       ${THEMES.map((t) => `<button data-click="theme" data-value="${t}" aria-pressed="${theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></section>
 
+    <section class="panel"><h2>Where to get books</h2><div class="seg" role="group" aria-label="Store">
+      ${Object.entries(STORES).map(([k, v]) => `<button data-click="set-store" data-value="${k}" aria-pressed="${shopPref === k}">${v}</button>`).join('')}</div>
+      <p class="meta">“Get it” and “Pre-order” links on book pages and Home open a search here.</p></section>
     <section class="panel"><h2>Hardcover token</h2>
       <p class="meta">${hasToken ? 'A token is saved on this phone.' : 'Needed for matching, search and checks.'} It is stored only on this device and sent only to Hardcover. Tokens expire; paste a new one if you see “rejected”.</p>
       <form class="stack" data-form="token"><label>API token <input type="password" name="token" autocomplete="off" placeholder="${hasToken ? '•••••••• (saved)' : 'paste token'}"></label>
@@ -517,7 +547,7 @@ async function viewMore() {
     <section class="panel"><h2>Hardcover fields</h2>
       <p class="meta">The app's Hardcover queries were written from the public docs. This compares them with the live schema.</p>
       <p><button data-click="verify">Verify Hardcover fields</button></p><pre class="out" id="verify-out"></pre>
-      <p class="meta">App version: recommendations info + refill (v7)</p></section>
+      <p class="meta">App version: read ticks, next to read, links, ratings (v8)</p></section>
 
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}`;
@@ -584,6 +614,7 @@ const clickActions = {
     const sid = await followSeries(store, client, { hardcover_series_id: Number(d.hc), name: d.name, author: d.author || null, cover_url: d.cover || null, complete: Boolean(d.complete) }, 0, covers);
     toast(`Following “${d.name}”. Use “Mark all released as read” on its page if you've read it.`); location.hash = `#/series/${sid}`;
   },
+  async 'recs-sort'(el) { await setSetting(store, 'recs_sort', el.dataset.value); await route(); },
   async 'rec-dismiss'(el) {
     await dismissRec(store, Number(el.dataset.hc));
     if (el.dataset.home) location.hash = '#/'; else await route();
@@ -616,6 +647,17 @@ const clickActions = {
     if (el.dataset.dismiss) await dismissUpdate(store, el.dataset.dismiss);
     await route();
   },
+  async 'toggle-read'(el) {
+    const on = await toggleRead(store, Number(el.dataset.id), Number(el.dataset.pos));
+    if (on && el.dataset.dismiss) await dismissUpdate(store, el.dataset.dismiss);
+    await route();
+  },
+  async 'toggle-aread'(el) {
+    const row = await store.get('author_book', `${el.dataset.aid}:${el.dataset.bid}`);
+    if (row) await store.put('author_book', { ...row, read: !row.read });
+    await route();
+  },
+  async 'set-store'(el) { await setSetting(store, 'store', el.dataset.value); toast(`Links go to ${STORES[el.dataset.value]}.`, { ms: 2500 }); await route(); },
   async remove(el) {
     if (!confirm(`Stop following “${el.dataset.name}”? Its progress and updates are deleted.`)) return;
     await removeSeries(store, Number(el.dataset.id));

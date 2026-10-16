@@ -78,10 +78,10 @@ test('findByIsbn shape', async () => {
 });
 
 test('bookDetails returns description and pages, tolerating gaps', async () => {
-  const c = make(async () => json({ data: { books: [{ description: 'A tale.', pages: 320 }] } }));
-  assert.deepEqual(await c.bookDetails(5), { description: 'A tale.', pages: 320 });
+  const c = make(async () => json({ data: { books: [{ description: 'A tale.', pages: 320, rating: 4.25 }] } }));
+  assert.deepEqual(await c.bookDetails(5), { description: 'A tale.', pages: 320, rating: 4.25 });
   const e = make(async () => json({ data: { books: [] } }));
-  assert.deepEqual(await e.bookDetails(6), { description: null, pages: null });
+  assert.deepEqual(await e.bookDetails(6), { description: null, pages: null, rating: null });
 });
 
 test('search costs ONE request for series, books and authors', async () => {

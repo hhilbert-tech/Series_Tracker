@@ -45,7 +45,7 @@ query MyLibrary {
 }`;
 export const SCHEMA_Q = 'query($n: String!) { __type(name: $n) { fields { name } } }';
 export const EXPECTED_FIELDS = {
-  books: ['id', 'title', 'release_date', 'image', 'canonical_id', 'is_partial_book', 'compilation', 'users_count', 'contributions', 'book_series', 'description', 'pages', 'cached_tags'],
+  books: ['id', 'title', 'release_date', 'image', 'canonical_id', 'is_partial_book', 'compilation', 'users_count', 'contributions', 'book_series', 'description', 'pages', 'rating', 'cached_tags'],
   editions: ['isbn_13', 'isbn_10', 'book'],
   series: ['id', 'name', 'is_completed', 'author', 'books_count'],
   book_series: ['position', 'series', 'book', 'book_id', 'series_id'],
@@ -121,9 +121,9 @@ export class HardcoverClient {
   // Description and page count for one book (shown on the book page; fetched on demand).
   async bookDetails(bookId) {
     const data = await this._cached('bd' + bookId, () => this.gql(
-      'query BookDetails($id: Int!) { books(where: {id: {_eq: $id}}, limit: 1) { description pages } }', { id: Number(bookId) }));
+      'query BookDetails($id: Int!) { books(where: {id: {_eq: $id}}, limit: 1) { description pages rating } }', { id: Number(bookId) }));
     const b = data.books?.[0] ?? {};
-    return { description: b.description ? String(b.description) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null };
+    return { description: b.description ? String(b.description) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null, rating: Number(b.rating) > 0 ? Number(b.rating) : null };
   }
 
   async findByIsbn(isbn) {
@@ -209,13 +209,13 @@ export class HardcoverClient {
     const data = await this.gql(`query PopularInGenre($tag: jsonb!) { books(
       where: {cached_tags: {_contains: $tag}, canonical_id: {_is_null: true}, book_series: {position: {_eq: 1}}}
       order_by: {users_count: desc}, limit: 20
-    ) { id users_count image { url } book_series(where: {position: {_eq: 1}}, limit: 1) { series { ${SERIES_FIELDS} } } } }`, { tag: { Genre: [{ tagSlug: slug }] } });
+    ) { id users_count rating image { url } book_series(where: {position: {_eq: 1}}, limit: 1) { series { ${SERIES_FIELDS} } } } }`, { tag: { Genre: [{ tagSlug: slug }] } });
     const out = [];
     for (const b of data.books ?? []) {
       const s = b.book_series?.[0]?.series;
       if (!s?.id) continue;
       out.push({ hardcover_series_id: Number(s.id), name: s.name ?? '', author: s.author?.name ?? null, cover_url: b.image?.url ?? null,
-        complete: Boolean(s.is_completed), users_count: Number(b.users_count) || 0 });
+        complete: Boolean(s.is_completed), users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null });
     }
     return out;
   }

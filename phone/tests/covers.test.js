@@ -52,3 +52,18 @@ test('placeholder escapes and is deterministic', () => {
   assert.ok(!a.includes('<script>') && a.includes('&lt;script&gt;'));
   assert.equal(a, placeholderSvg('<script>', 'seed'));
 });
+
+test('title lookup: found once, stored; a miss is remembered', async () => {
+  const store = new MemStore(), f = fetcher(IMG);
+  const searches = [];
+  const cache = new CoverCache(store, f, async (t, a) => { searches.push([t, a]); return t === 'Known' ? 'https://covers/x.jpg' : null; });
+  assert.equal(await cache.lookupByTitle('k', 'Known', 'Ann'), 'k');
+  assert.equal(await cache.lookupByTitle('k', 'Known', 'Ann'), 'k');
+  assert.equal(searches.length, 1);
+  assert.equal(await cache.lookupByTitle('m', 'Unknown'), null);
+  assert.equal(await cache.lookupByTitle('m', 'Unknown'), null);
+  assert.equal(searches.length, 2);
+  const boom = new CoverCache(new MemStore(), f, async () => { throw new Error('net'); });
+  assert.equal(await boom.lookupByTitle('z', 'T'), null);
+  assert.equal(await boom.store.get('covers', 'z'), undefined);               // transient: nothing remembered
+});

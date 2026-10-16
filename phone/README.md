@@ -2,7 +2,6 @@
 
 An installable web app. Everything runs in your phone's browser and your data stays on the phone
 (IndexedDB). The only network traffic is to Hardcover (and cover images), straight from the phone.
-The Python version one folder up is untouched and still works if you ever want a server.
 
 ## What differs from the spec
 - **No nightly email.** There is no always-on machine. The app checks when you open it (at most every 12 hours,
@@ -34,8 +33,12 @@ confirmed against the live schema. If anything is listed as missing, the queries
 
 ## Notes
 - Hardcover's docs currently say API queries should run server-side and list browser use as planned for 2026, while
-  noting CORS is open. It works today; if Hardcover blocks it later, use the Python version.
+  noting CORS is open. It works today; if Hardcover blocks it later, a small proxy would be the fix.
 - Tokens expire (you choose the period when creating one). A "rejected" message means paste a new one.
 - Export a backup from *More* now and then; restoring replaces everything on the phone.
 - Updates: re-upload the files. The new version appears the second time you open the app.
 - Tests: `npm test` (Node 20+): 49 tests covering the acceptance criteria, import/matching and WCAG AA contrast.
+
+## Added later
+- Per-book read ticks (a skipped book stays unread), "Next to read" shelf on Home, "Get it / Pre-order" links to a store you pick in More,
+  ratings and sorting on suggestions, cover lookup by title on Open Library when no cover is found.

@@ -24,3 +24,11 @@ export function when(d, today = todayIso()) {
   if (n < 730) return { text: `in ${est}${Math.round(n / 30.4)} months`, tone: 'far' };
   return { text: `in ${est}${Math.round(n / 365)} years`, tone: 'far' };
 }
+
+// "Get it" links for the store chosen in More (default: the Hardcover search page).
+export const STORES = { hardcover: 'Hardcover', amazon: 'Amazon', kobo: 'Kobo', google: 'Google Books' };
+export function storeLink(store, title, author = '') {
+  const q = encodeURIComponent([title, author].filter(Boolean).join(' '));
+  return ({ amazon: `https://www.amazon.es/s?k=${q}&i=stripbooks`, kobo: `https://www.kobo.com/es/en/search?query=${q}`,
+    google: `https://www.google.com/search?tbm=bks&q=${q}` }[store]) ?? `https://hardcover.app/search?q=${q}`;
+}

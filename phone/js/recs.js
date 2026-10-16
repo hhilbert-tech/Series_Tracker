@@ -2,7 +2,7 @@
 // of the books you've read. Built from a few Hardcover requests, cached for a week, filtered at display
 // time so a follow or dismissal takes effect at once. Failures only mean fewer suggestions.
 import { HardcoverAuthError } from './hardcover.js';
-import { getSetting, setSetting, nowIso, maxRead, removedSeriesIds } from './db.js';
+import { getSetting, setSetting, nowIso, maxRead, removedSeriesIds, isRead } from './db.js';
 
 export const RECS_TTL_MS = 7 * 864e5;
 const MAX_AUTHORS = 8, MAX_GENRES = 2, MAX_ITEMS = 60;
@@ -27,7 +27,7 @@ export async function buildRecs(store, client, { genres: maxGenres = MAX_GENRES 
     const ids = [];
     for (const s of series) {
       const read = await maxRead(store, s.id);
-      for (const r of await store.all('series_book')) if (r.series_id === s.id && r.position <= read && r.hardcover_book_id) ids.push(r.hardcover_book_id);
+      for (const r of await store.all('series_book')) if (r.series_id === s.id && isRead(r, read) && r.hardcover_book_id) ids.push(r.hardcover_book_id);
     }
     const tally = new Map();
     for (const b of await client.bookTags(ids)) for (const g of b.genres) tally.set(g.slug, { slug: g.slug, name: g.name ?? g.slug, n: (tally.get(g.slug)?.n ?? 0) + g.count });

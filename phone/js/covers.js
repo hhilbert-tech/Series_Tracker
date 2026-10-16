@@ -16,8 +16,36 @@ export async function defaultFetch(url) {
   return { data, type: r.headers.get('content-type') || data.type };
 }
 
+// Open Library search by title (+ author): -> cover image URL | null. Throws on transient errors.
+export async function defaultTitleSearch(title, author) {
+  const q = new URLSearchParams({ title, limit: '5', fields: 'cover_i,author_name,title' });
+  if (author) q.set('author', author);
+  const r = await fetch(`https://openlibrary.org/search.json?${q}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const hit = ((await r.json()).docs ?? []).find((d) => d.cover_i);
+  return hit ? `https://covers.openlibrary.org/b/id/${hit.cover_i}-M.jpg?default=false` : null;
+}
+
 export class CoverCache {
-  constructor(store, fetcher = defaultFetch) { this.store = store; this.fetcher = fetcher; }
+  constructor(store, fetcher = defaultFetch, titleSearch = defaultTitleSearch) { this.store = store; this.fetcher = fetcher; this.titleSearch = titleSearch; }
+
+  // Last resort for books no source had an image for: look the title up on Open Library, once ever per key.
+  async lookupByTitle(key, title, author = null) {
+    const rec = await this.store.get('covers', key);
+    if (rec && !rec.none) return key;
+    if (rec?.tl || !title) return null;
+    let url;
+    try { url = await this.titleSearch(title, author); } catch { return null; }   // transient: try again another time
+    if (url) {
+      try {
+        const res = await this.fetcher(url), type = (res?.type || '').split(';')[0].trim().toLowerCase();
+        if (res && TYPES.has(type) && res.data.size && res.data.size <= MAX_BYTES) { await this.store.put('covers', { key, blob: res.data, type }); return key; }
+      } catch { return null; }
+    }
+    await this.store.put('covers', { key, none: true, tl: true });
+    return null;
+  }
+
 
   // Returns the cache key if a cover is stored, else null.
   async getOrFetch(key, urls) {

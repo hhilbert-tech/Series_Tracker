@@ -191,3 +191,33 @@ test('dismissed updates leave the list and badge but are never re-raised', async
   await dismissAllUpdates(store);
   assert.equal((await updates(store)).length, 0);
 });
+
+// Per-book read flags
+import { isRead, toggleRead, setProgress, notifying } from '../js/db.js';
+test('per-book read: a skipped book stays unread, a later one can be read, and neither alerts', async () => {
+  const store = new MemStore(), client = new FakeClient();
+  const sid = await addSeries(store, { maxRead: 3 }); client.series[1] = four(FUTURE);
+  await runCheck(store, client, { today: TODAY });
+  assert.equal(await toggleRead(store, sid, 2), false);                       // skipped #2
+  assert.equal(await toggleRead(store, sid, 4), true);                        // read #4 although #3 is the max
+  const rows = new Map((await store.all('series_book')).map((r) => [r.position, r]));
+  assert.equal(isRead(rows.get(1), 3), true);
+  assert.equal(isRead(rows.get(2), 3), false);
+  assert.equal(isRead(rows.get(4), 3), true);
+  assert.equal(notifying(rows.get(4), 3), false);                             // read: no alerts for it
+  const again = await runCheck(store, client, { today: TODAY });
+  assert.deepEqual(kinds(again), []);                                         // skipped past book does not raise a "released" alert
+});
+test('"read up to here" clears overrides it covers; reset clears everything', async () => {
+  const store = new MemStore(), client = new FakeClient();
+  const sid = await addSeries(store, { maxRead: 3 }); client.series[1] = four(PAST);
+  await runCheck(store, client, { today: TODAY });
+  await toggleRead(store, sid, 2); await toggleRead(store, sid, 4);
+  await setProgress(store, sid, 3);
+  let rows = new Map((await store.all('series_book')).map((r) => [r.position, r]));
+  assert.equal(rows.get(2).read, undefined);
+  assert.equal(rows.get(4).read, true);                                       // beyond progress: kept
+  await setProgress(store, sid, 0);
+  rows = new Map((await store.all('series_book')).map((r) => [r.position, r]));
+  assert.ok([...rows.values()].every((r) => r.read === undefined));
+});
