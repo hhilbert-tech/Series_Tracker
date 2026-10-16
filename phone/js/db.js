@@ -48,4 +48,6 @@ export async function removeSeries(store, sid) {
   await store.delete('user_progress', sid);
   await store.delete('series', sid);
 }
+// Will this book raise alerts? Default: whole-number books past your progress. "Notify me" overrides it either way.
+export const notifying = (row, read) => row.notify ?? (Number.isInteger(row.position) && row.position > read);
 export async function maxRead(store, sid) { return (await store.get('user_progress', sid))?.max_position_read ?? 0; }

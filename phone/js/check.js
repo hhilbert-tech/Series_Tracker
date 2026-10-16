@@ -26,10 +26,10 @@ export async function syncSeries(store, seriesId, books, today, baseline, covers
 
   for (const b of [...books].sort((x, y) => x.position - y.position)) {
     const { position: pos, hardcover_book_id: hid, title } = b, d = b.release_date ?? null;
-    const counted = Number.isInteger(pos) && pos > mx;              // decimals never count as "next"
+    const row = existing.get(pos);
+    const counted = row?.notify ?? (Number.isInteger(pos) && pos > mx);   // default: whole books past your progress; "Notify me" overrides
     const past = isPast(d, today);
     const base = { series_id: seriesId, hardcover_book_id: hid, position: pos, title, release_date: d, detail: null };
-    const row = existing.get(pos);
     if (!row) {
       await store.put('series_book', { key: sbKey(seriesId, pos), series_id: seriesId, position: pos, hardcover_book_id: hid, title,
         release_date: d, first_seen_at: nowIso(), cover_key: null, cover_url: b.cover_url ?? null });

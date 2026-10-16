@@ -133,6 +133,7 @@ details.menu[open] summary { background: var(--bg); }
 .menu-items button { border: 0; background: transparent; text-align: left; color: var(--text); }
 .menu-items button.danger { color: var(--danger); }
 
+button.small[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); font-weight: 600; }
 button.small { min-height: 2.5rem; padding: .25rem .8rem; font-size: .9rem; flex: none; }
 .rows li { gap: .8rem; padding: .7rem 0; }
 .rows .grow { flex: 1; min-width: 0; }

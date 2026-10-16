@@ -3,7 +3,7 @@
 import { openIdbStore } from './store-idb.js';
 import { HardcoverClient, HardcoverError } from './hardcover.js';
 import { CoverCache, placeholderUri } from './covers.js';
-import { getSetting, setSetting, todayIso, sbKey, maxRead, setProgress, removeSeries, lastReleased, nowIso } from './db.js';
+import { getSetting, setSetting, todayIso, sbKey, notifying, maxRead, setProgress, removeSeries, lastReleased, nowIso } from './db.js';
 import { followAuthor, removeAuthor } from './authors.js';
 import { runCheck, updates, pendingEvents, markAllSeen } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
@@ -36,6 +36,8 @@ function when(d, today = todayIso()) {
   if (n < 730) return { text: `in ${Math.round(n / 30.4)} months`, tone: 'far' };
   return { text: `in ${Math.round(n / 365)} years`, tone: 'far' };
 }
+const notifyBtn = (sid, b, read) => { const on = notifying(b, read);
+  return `<button class="small notify" aria-pressed="${on}" data-click="notify" data-id="${sid}" data-pos="${b.position}">${on ? '🔔 Notifying' : 'Notify me'}</button>`; };
 const chip = (w, extra = '') => `<span class="chip ${w.tone} ${extra}">${esc(w.text)}</span>`;
 const menu = (label, items) => `<details class="menu"><summary aria-label="Actions for ${esc(label)}">⋯</summary><div class="menu-items">${items}</div></details>`;
 function progress(series_books, read) {
@@ -151,9 +153,11 @@ async function viewSeries(id) {
         <button class="danger" data-click="remove" data-id="${s.id}" data-name="${esc(s.name)}" data-home="1">Remove</button>`)}</div>
     ${books.length ? `<ul class="rows">${books.map((b) => {
       const whole = Number.isInteger(b.position), isRead = b.position <= read, w = when(b.release_date, today);
-      const btn = !whole ? '' : isRead
-        ? (b.position === read ? `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position - 1}">Undo</button>` : '')
-        : `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read to here</button>`;
+      const unreleased = w.tone !== 'ok';
+      const btn = isRead
+        ? (whole && b.position === read ? `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position - 1}">Undo</button>` : '')
+        : unreleased ? notifyBtn(s.id, b, read)
+        : whole ? `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read to here</button>` : '';
       return `<li class="${isRead ? 'read' : ''}">
         ${img(b.cover_key ?? `sb-${s.id}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover small')}
         <div class="grow"><a class="booklink" href="#/book/${s.id}/${b.position}"><span class="num">#${pos(b.position)}</span> ${esc(b.title)}</a><br>
@@ -167,9 +171,10 @@ async function viewBook(sid, position) {
   if (!s || !b) return '<p>No such book. <a href="#/">Back</a></p>';
   const read = await maxRead(store, sid), isRead = b.position <= read, w = when(b.release_date);
   const whole = Number.isInteger(b.position);
-  const btn = !whole ? '' : isRead
-    ? (b.position === read ? `<button data-click="read-to" data-id="${sid}" data-pos="${b.position - 1}">Undo read</button>` : '')
-    : `<button class="primary" data-click="read-to" data-id="${sid}" data-pos="${b.position}">Read up to here</button>`;
+  const btn = isRead
+    ? (whole && b.position === read ? `<button data-click="read-to" data-id="${sid}" data-pos="${b.position - 1}">Undo read</button>` : '')
+    : w.tone !== 'ok' ? notifyBtn(sid, b, read)
+    : whole ? `<button class="primary" data-click="read-to" data-id="${sid}" data-pos="${b.position}">Read up to here</button>` : '';
   afterRender = async () => {
     const box = document.getElementById('book-more');
     if (!box) return;
@@ -423,6 +428,13 @@ const clickActions = {
   async 'remove-author'(el) {
     if (!confirm(`Stop following ${el.dataset.name}? Their updates are deleted.`)) return;
     await removeAuthor(store, Number(el.dataset.id)); toast('Removed.'); location.hash = '#/'; await route();
+  },
+  async notify(el) {
+    const sid = Number(el.dataset.id), pos_ = Number(el.dataset.pos), row = await store.get('series_book', sbKey(sid, pos_));
+    if (!row) return;
+    const on = !notifying(row, await maxRead(store, sid));
+    await store.put('series_book', { ...row, notify: on });
+    toast(on ? `You'll be notified about “${row.title}”.` : `Notifications off for “${row.title}”.`, { ms: 3000 }); await route();
   },
   async 'read-none'(el) { await setProgress(store, Number(el.dataset.id), 0); await route(); },
   async 'read-all'(el) {

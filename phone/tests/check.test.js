@@ -152,3 +152,21 @@ test('removeSeries clears the series and its data, keeps others', async () => {
   assert.ok((await store.all('notification_log')).every((r) => r.series_id === b));
   assert.ok(await store.get('series', b));
 });
+
+test('"Notify me" overrides the default per book (decimal opt-in, whole opt-out)', async () => {
+  const { notifying } = await import('../js/db.js');
+  assert.equal(notifying({ position: 5 }, 4), true);
+  assert.equal(notifying({ position: 5.5 }, 4), false);
+  assert.equal(notifying({ position: 5, notify: false }, 4), false);
+  assert.equal(notifying({ position: 5.5, notify: true }, 4), true);
+  const store = new MemStore(), client = new FakeClient();
+  const sid = await addSeries(store, { maxRead: 4 });
+  client.series[1] = [book(4, null, PAST), book(5, null, FUTURE), book(5.5, null, FUTURE)];
+  await runCheck(store, client, { today: TODAY });              // baseline-ish first check records the rows
+  for (const [p, on] of [[5, false], [5.5, true]]) {
+    const row = await store.get('series_book', `${sid}:${p}`); await store.put('series_book', { ...row, notify: on });
+  }
+  client.series[1] = [book(4, null, PAST), book(5, null, '2099-09-09'), book(5.5, null, '2099-10-10')];
+  const res = await runCheck(store, client, { today: TODAY });
+  assert.deepEqual(kinds(res), [['date_changed', 5.5]]);        // 5 silenced, 5.5 opted in
+});
