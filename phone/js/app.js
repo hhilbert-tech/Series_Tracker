@@ -6,7 +6,7 @@ import { CoverCache, placeholderUri } from './covers.js';
 import { getSetting, setSetting, todayIso, sbKey, notifying, maxRead, setProgress, removeSeries, unremoveSeries, lastReleased, nowIso } from './db.js';
 import { followAuthor, removeAuthor } from './authors.js';
 import { fmtDate, when } from './format.js';
-import { runCheck, updates, pendingEvents, markAllSeen } from './check.js';
+import { runCheck, updates, pendingEvents, markAllSeen, dismissUpdate, dismissAllUpdates } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
 import { KEYS } from './store-base.js';
 
@@ -314,14 +314,22 @@ async function viewUpdates() {
   const list = (await updates(store)).sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? '')).slice(0, 100);
   const unseen = list.filter((n) => !n.seen_at).length;
   const tone = { announced: 'near', date_changed: 'warn', released: 'ok' };
-  return `<div class="pagehead"><h1>Updates</h1>${unseen ? '<button class="small" data-click="mark-seen">Mark all seen</button>' : ''}</div>
-    ${list.length ? `<ul class="cards">${list.map((n) => { const w = when(n.release_date); return `<li class="card ${n.seen_at ? '' : 'unseen'}">
+  const readOf = new Map();
+  for (const n of list) if (n.series_id != null && !readOf.has(n.series_id)) readOf.set(n.series_id, await maxRead(store, n.series_id));
+  return `<div class="pagehead"><h1>Updates</h1><span class="head-actions">
+      ${unseen ? '<button class="small" data-click="mark-seen">Mark all seen</button>' : ''}
+      ${list.length ? '<button class="small" data-click="dismiss-all">Clear all</button>' : ''}</span></div>
+    ${list.length ? `<ul class="cards">${list.map((n) => { const w = when(n.release_date);
+      const canRead = n.kind === 'released' && n.series_id != null && n.position != null && n.position > readOf.get(n.series_id);
+      return `<li class="card has-actions ${n.seen_at ? '' : 'unseen'}">
         <a class="cardlink" href="#/${n.author_id != null ? 'author/' + n.author_id : 'series/' + n.series_id}">
         ${img(n.author_id != null ? null : (n.cover_key ?? `sb-${n.series_id}-${n.position}`), n.author_id != null ? n.cover_url : null, n.title ?? '', n.series_name)}
         <div class="body"><p><span class="chip ${tone[n.kind]}">${LABEL[n.kind]}</span></p>
         <h2>${n.position != null ? '#' + pos(n.position) + ' ' : ''}${esc(n.title)}</h2>
         <p class="meta">${esc(n.series_name)}${n.author_id != null ? ' · author' : ''}</p>
-        <p class="meta">${n.kind === 'date_changed' ? `${esc(fmtDate(n.detail))} → ${esc(fmtDate(n.release_date))}` : `${esc(fmtDate(n.release_date))}${w.tone === 'tba' ? '' : ' · ' + esc(w.text)}`}</p></div></a></li>`; }).join('')}</ul>`
+        <p class="meta">${n.kind === 'date_changed' ? `${esc(fmtDate(n.detail))} → ${esc(fmtDate(n.release_date))}` : `${esc(fmtDate(n.release_date))}${w.tone === 'tba' ? '' : ' · ' + esc(w.text)}`}</p></div></a>
+        <div class="card-actions">${canRead ? `<button class="small" data-click="read-to" data-id="${n.series_id}" data-pos="${n.position}" data-dismiss="${esc(n.key)}">Mark read</button>` : ''}
+          <button class="small" data-click="dismiss-update" data-key="${esc(n.key)}">Dismiss</button></div></li>`; }).join('')}</ul>`
       : '<p>Nothing yet. New announcements, date changes and releases for series and authors you follow show up here after a check.</p>'}`;
 }
 
@@ -444,6 +452,8 @@ const clickActions = {
   async 'mark-seen'() { await markAllSeen(store); toast('All caught up.'); await route(); },
   async 'check-now'() { await checkNow(); },
   async 'remove-token'() { await store.delete('settings', 'hc_token'); toast('Token removed.'); await route(); },
+  async 'dismiss-update'(el) { await dismissUpdate(store, el.dataset.key); await route(); },
+  async 'dismiss-all'() { if (!confirm('Clear all updates?')) return; await dismissAllUpdates(store); await route(); },
   async dismiss(el) {
     const { kind, id, pos: p, bid } = el.dataset;
     const [table, key] = kind === 'author' ? ['author_book', `${id}:${bid}`] : ['series_book', sbKey(Number(id), Number(p))];
@@ -465,7 +475,11 @@ const clickActions = {
     await assignGroup(store, client, Number(el.dataset.id), { hardcover_series_id: Number(el.dataset.hc), name: el.dataset.name, author: el.dataset.author || null }, covers);
     location.hash = '#/review'; await route();
   },
-  async 'read-to'(el) { await setProgress(store, Number(el.dataset.id), Number(el.dataset.pos)); await route(); },
+  async 'read-to'(el) {
+    await setProgress(store, Number(el.dataset.id), Number(el.dataset.pos));
+    if (el.dataset.dismiss) await dismissUpdate(store, el.dataset.dismiss);
+    await route();
+  },
   async remove(el) {
     if (!confirm(`Stop following “${el.dataset.name}”? Its progress and updates are deleted.`)) return;
     await removeSeries(store, Number(el.dataset.id));

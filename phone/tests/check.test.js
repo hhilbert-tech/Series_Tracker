@@ -172,3 +172,22 @@ test('"Notify me" overrides the default per book (decimal opt-in, whole opt-out)
   const res = await runCheck(store, client, { today: TODAY });
   assert.deepEqual(kinds(res), [['date_changed', 5.5]]);        // 5 silenced, 5.5 opted in
 });
+
+test('dismissed updates leave the list and badge but are never re-raised', async () => {
+  const { dismissUpdate, dismissAllUpdates, updates } = await import('../js/check.js');
+  const store = new MemStore(), client = new FakeClient();
+  await addSeries(store); client.series[1] = four(FUTURE);
+  let res = await runCheck(store, client, { today: TODAY });
+  assert.equal(res.events.length, 1);
+  const [n] = await updates(store);
+  await dismissUpdate(store, n.key);
+  assert.equal((await updates(store)).length, 0);
+  assert.equal((await pendingEvents(store)).length, 0);
+  res = await runCheck(store, client, { today: TODAY });
+  assert.equal(res.events.length, 0);                                  // same book not announced again
+  client.series[1] = [...four(FUTURE), book(5, null, FUTURE)];
+  res = await runCheck(store, client, { today: TODAY });
+  assert.equal((await updates(store)).length, 1);                      // a genuinely new one still arrives
+  await dismissAllUpdates(store);
+  assert.equal((await updates(store)).length, 0);
+});

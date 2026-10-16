@@ -89,7 +89,7 @@ export async function updates(store, { onlyUnseen = false } = {}) {
   const authors = new Map((await store.all('author')).map((a) => [a.hardcover_author_id, a]));
   const sbs = new Map((await store.all('series_book')).map((r) => [r.key, r]));
   return (await store.all('notification_log'))
-    .filter((n) => !n.suppressed && (!onlyUnseen || !n.seen_at) && (n.author_id != null ? authors.has(n.author_id) : names.has(n.series_id)))
+    .filter((n) => !n.suppressed && !n.dismissed && (!onlyUnseen || !n.seen_at) && (n.author_id != null ? authors.has(n.author_id) : names.has(n.series_id)))
     .map((n) => (n.author_id != null
       ? { ...n, series_name: authors.get(n.author_id).name, old_date: n.detail, cover_key: null }
       : { ...n, series_name: names.get(n.series_id).name, old_date: n.detail,
@@ -98,4 +98,13 @@ export async function updates(store, { onlyUnseen = false } = {}) {
 export async function pendingEvents(store) { return (await updates(store, { onlyUnseen: true })).sort(byUpdate); }
 export async function markAllSeen(store) {
   for (const n of await store.all('notification_log')) if (!n.seen_at) await store.put('notification_log', { ...n, seen_at: nowIso() });
+}
+
+// Dismissed rows stay in the log (their keys prevent the same event being raised again) but leave the list.
+export async function dismissUpdate(store, key) {
+  const n = await store.get('notification_log', key);
+  if (n) await store.put('notification_log', { ...n, dismissed: 1, seen_at: n.seen_at ?? nowIso() });
+}
+export async function dismissAllUpdates(store) {
+  for (const n of await store.all('notification_log')) if (!n.dismissed) await store.put('notification_log', { ...n, dismissed: 1, seen_at: n.seen_at ?? nowIso() });
 }
