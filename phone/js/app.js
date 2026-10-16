@@ -467,7 +467,8 @@ async function viewMore() {
 
     <section class="panel"><h2>Hardcover fields</h2>
       <p class="meta">The app's Hardcover queries were written from the public docs. This compares them with the live schema.</p>
-      <p><button data-click="verify">Verify Hardcover fields</button></p><pre class="out" id="verify-out"></pre></section>
+      <p><button data-click="verify">Verify Hardcover fields</button></p><pre class="out" id="verify-out"></pre>
+      <p class="meta">App version: author grouping (v5)</p></section>
 
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}`;
