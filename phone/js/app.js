@@ -3,14 +3,14 @@
 import { openIdbStore } from './store-idb.js';
 import { HardcoverClient, HardcoverError } from './hardcover.js';
 import { CoverCache, placeholderUri } from './covers.js';
-import { getSetting, setSetting, sbKey, maxRead, setProgress, removeSeries, lastReleased, nowIso } from './db.js';
+import { getSetting, setSetting, todayIso, sbKey, maxRead, setProgress, removeSeries, lastReleased, nowIso } from './db.js';
 import { followAuthor, removeAuthor } from './authors.js';
 import { runCheck, updates, pendingEvents, markAllSeen } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
 import { KEYS } from './store-base.js';
 
 const THEMES = ['system', 'light', 'dark'];
-const LABEL = { announced: 'New book announced', date_changed: 'Release date changed', released: 'Now released' };
+const LABEL = { announced: 'New book', date_changed: 'Date changed', released: 'Now out' };
 const CHECK_EVERY_MS = 12 * 3600 * 1000;
 const $app = document.getElementById('app');
 let store, covers, client, theme = 'system', checking = false, searchSeq = 0, installPrompt = null, afterRender = null;
@@ -19,6 +19,30 @@ const objectUrls = new Map();
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pos = (p) => (p == null ? '' : String(Number(p)));
+const fmtDate = (d) => {
+  if (!d) return 'Date TBA';
+  const t = new Date(d.slice(0, 10) + 'T00:00:00');
+  return Number.isNaN(t.getTime()) ? d : t.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+};
+// "in 3 weeks" / "Out now" with a tone for the chip colour.
+function when(d, today = todayIso()) {
+  if (!d) return { text: 'Date TBA', tone: 'tba' };
+  const n = Math.round((new Date(d.slice(0, 10) + 'T00:00:00') - new Date(today + 'T00:00:00')) / 864e5);
+  if (Number.isNaN(n)) return { text: 'Date TBA', tone: 'tba' };
+  if (n < 0) return { text: 'Out now', tone: 'ok' };
+  if (n === 0) return { text: 'Today', tone: 'soon' };
+  if (n <= 30) return { text: `in ${n} day${n > 1 ? 's' : ''}`, tone: 'soon' };
+  if (n < 90) return { text: `in ${Math.round(n / 7)} weeks`, tone: 'near' };
+  if (n < 730) return { text: `in ${Math.round(n / 30.4)} months`, tone: 'far' };
+  return { text: `in ${Math.round(n / 365)} years`, tone: 'far' };
+}
+const chip = (w, extra = '') => `<span class="chip ${w.tone} ${extra}">${esc(w.text)}</span>`;
+const menu = (label, items) => `<details class="menu"><summary aria-label="Actions for ${esc(label)}">⋯</summary><div class="menu-items">${items}</div></details>`;
+function progress(series_books, read) {
+  const whole = series_books.filter((r) => Number.isInteger(r.position));
+  return { total: whole.length, read: whole.filter((r) => r.position <= read).length };
+}
+const progressHtml = (p) => (p.total ? `<div class="progress"><div class="bar" role="img" aria-label="${p.read} of ${p.total} read"><i style="width:${Math.round(100 * p.read / p.total)}%"></i></div><span class="meta">${p.read} of ${p.total} read</span></div>` : '');
 const msg = (e) => (e instanceof HardcoverError ? e.message : 'Something went wrong: ' + (e?.message ?? e));
 
 // ---- feedback ---------------------------------------------------------------------------
@@ -69,78 +93,83 @@ async function hydrateCovers(root = $app) {
 }
 
 // ---- views ----------------------------------------------------------------------------------
-function seriesCard(s, read, next) {
+function seriesCard(s, read, next, prog) {
+  const w = next ? when(next.release_date) : null;
   return `<li class="card ${s.muted ? 'is-muted' : ''}">
-    ${img(s.cover_key ?? `series-${s.id}`, s.cover_key ? '' : s.cover_url, s.name, s.name)}
-    <div>
-      <h2><a href="#/series/${s.id}">${esc(s.name)}</a>${s.muted ? ' <span class="badge">Muted</span>' : ''}</h2>
-      <p class="meta">${esc(s.author ?? 'Unknown author')} · read up to #${pos(read)}</p>
-      <p>${next ? `Next: <a href="#/book/${s.id}/${next.position}">#${pos(next.position)} ${esc(next.title)}</a> — ${esc(next.release_date ?? 'date TBA')}`
-        : s.last_checked_at ? 'No unread book announced yet' : 'Not checked yet'}</p>
-      <button data-click="mute" data-id="${s.id}">${s.muted ? 'Unmute' : 'Mute'}</button>
-      <button data-click="remove" data-id="${s.id}" data-name="${esc(s.name)}">Remove</button>
-    </div></li>`;
+    <a class="cardlink" href="#/series/${s.id}">
+      ${img(s.cover_key ?? `series-${s.id}`, s.cover_key ? '' : s.cover_url, s.name, s.name)}
+      <div class="body">
+        <h2>${esc(s.name)}${s.muted ? ' <span class="badge">Muted</span>' : ''}</h2>
+        <p class="meta">${esc(s.author ?? 'Unknown author')}</p>
+        ${progressHtml(prog)}
+        ${next ? `<p class="next">Next: <strong>#${pos(next.position)} ${esc(next.title)}</strong></p><p>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(next.release_date))}</span></p>`
+          : `<p class="meta">${s.last_checked_at ? 'No unread book announced yet' : 'Not checked yet'}</p>`}
+      </div></a>
+    ${menu(s.name, `<button data-click="mute" data-id="${s.id}">${s.muted ? 'Unmute' : 'Mute'}</button>
+      <button class="danger" data-click="remove" data-id="${s.id}" data-name="${esc(s.name)}">Remove</button>`)}</li>`;
 }
 
 async function viewHome() {
   const series = (await store.all('series')).sort((a, b) => a.muted - b.muted || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   const sbs = await store.all('series_book');
+  const authors = (await store.all('author')).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   const cards = [];
   for (const s of series) {
-    const read = await maxRead(store, s.id);
-    const next = sbs.filter((r) => r.series_id === s.id && Number.isInteger(r.position) && r.position > read).sort((a, b) => a.position - b.position)[0];
-    cards.push(seriesCard(s, read, next));
+    const read = await maxRead(store, s.id), mine = sbs.filter((r) => r.series_id === s.id);
+    const next = mine.filter((r) => Number.isInteger(r.position) && r.position > read).sort((a, b) => a.position - b.position)[0];
+    cards.push(seriesCard(s, read, next, progress(mine, read)));
   }
-  const authors = (await store.all('author')).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   const muted = series.filter((s) => s.muted).length;
   const unseen = (await pendingEvents(store)).length;
-  return `<h1>You're following ${series.length - muted} series${muted ? ` <small>(${muted} muted)</small>` : ''}</h1>
-    ${unseen ? `<p class="flash"><a href="#/updates">${unseen} new update${unseen > 1 ? 's' : ''} — see what's new</a></p>` : ''}
+  return `<div class="pagehead"><h1>Following</h1><span class="meta">${series.length - muted} series${muted ? ` · ${muted} muted` : ''}${authors.length ? ` · ${authors.length} author${authors.length > 1 ? 's' : ''}` : ''}</span></div>
+    ${unseen ? `<a class="flash" href="#/updates"><span class="badge fill">${unseen}</span> new update${unseen > 1 ? 's' : ''} — see what's new</a>` : ''}
     ${series.length ? `<ul class="cards">${cards.join('')}</ul>`
       : `<p>Nothing followed yet.</p><p><a class="btn" href="#/more">Import your reading history</a> or <a href="#/search">search for a series</a>.</p>`}
-    ${authors.length ? `<h2>Authors you follow</h2><ul class="cards">${authors.map((a) => `<li class="card ${a.muted ? 'is-muted' : ''}">
-      ${img(null, a.cover_url, a.name, a.name)}<div><h2><a href="#/author/${a.hardcover_author_id}">${esc(a.name)}</a>${a.muted ? ' <span class="badge">Muted</span>' : ''}</h2>
-      <p class="meta">New books by this author show up in Updates.</p></div></li>`).join('')}</ul>` : ''}`;
+    ${authors.length ? `<h2 class="label">Authors</h2><ul class="cards">${authors.map((a) => `<li class="card ${a.muted ? 'is-muted' : ''}">
+      <a class="cardlink" href="#/author/${a.hardcover_author_id}">${img(null, a.cover_url, a.name, a.name)}
+        <div class="body"><h2>${esc(a.name)}${a.muted ? ' <span class="badge">Muted</span>' : ''}</h2>
+        <p class="meta">New books show up in Updates</p></div></a>
+      ${menu(a.name, `<button data-click="mute-author" data-id="${a.hardcover_author_id}">${a.muted ? 'Unmute' : 'Mute'}</button>
+        <button class="danger" data-click="remove-author" data-id="${a.hardcover_author_id}" data-name="${esc(a.name)}">Remove</button>`)}</li>`).join('')}</ul>` : ''}`;
 }
 
 async function viewSeries(id) {
   const s = await store.get('series', Number(id));
   if (!s) return '<p>No such series. <a href="#/">Back</a></p>';
-  const read = await maxRead(store, s.id);
+  const read = await maxRead(store, s.id), today = todayIso();
   const books = (await store.all('series_book')).filter((r) => r.series_id === s.id).sort((a, b) => a.position - b.position);
-  return `<p><a href="#/">← Following</a></p>
-    <div class="card" style="margin-bottom:1rem">
+  return `<p><a class="back" href="#/">← Following</a></p>
+    <div class="hero">
       ${img(s.cover_key ?? `series-${s.id}`, s.cover_key ? '' : s.cover_url, s.name, s.name, 'cover big')}
-      <div><h1>${esc(s.name)}${s.muted ? ' <span class="badge">Muted</span>' : ''}</h1>
-        <p class="meta">${esc(s.author ?? 'Unknown author')}${s.author ? ` (<a href="#/search?q=${encodeURIComponent(s.author)}">follow author</a>)` : ''} · read up to #${pos(read)}${s.complete ? ' · complete' : ''}</p>
-        <p class="meta">${s.last_checked_at ? 'Last checked ' + esc(s.last_checked_at) : 'Not checked yet'}</p>
-        <button data-click="mute" data-id="${s.id}">${s.muted ? 'Unmute' : 'Mute'}</button>
-        <button data-click="read-all" data-id="${s.id}">Mark all released as read</button>
-        <button data-click="remove" data-id="${s.id}" data-name="${esc(s.name)}" data-home="1">Remove</button>
-        ${read ? `<button data-click="read-none" data-id="${s.id}">Reset progress</button>` : ''}</div></div>
+      <div class="body"><h1>${esc(s.name)}${s.muted ? ' <span class="badge">Muted</span>' : ''}</h1>
+        <p class="meta">${esc(s.author ?? 'Unknown author')}${s.author ? ` · <a href="#/search?q=${encodeURIComponent(s.author)}">follow author</a>` : ''}${s.complete ? ' · complete' : ''}</p>
+        ${progressHtml(progress(books, read))}
+        <p class="meta">${s.last_checked_at ? 'Checked ' + esc(s.last_checked_at.slice(0, 10)) : 'Not checked yet'}</p></div></div>
+    <div class="actions"><button class="primary" data-click="read-all" data-id="${s.id}">Mark all released as read</button>
+      ${menu(s.name, `<button data-click="mute" data-id="${s.id}">${s.muted ? 'Unmute' : 'Mute'}</button>
+        ${read ? `<button data-click="read-none" data-id="${s.id}">Reset progress</button>` : ''}
+        <button class="danger" data-click="remove" data-id="${s.id}" data-name="${esc(s.name)}" data-home="1">Remove</button>`)}</div>
     ${books.length ? `<ul class="rows">${books.map((b) => {
-      const whole = Number.isInteger(b.position), isRead = b.position <= read;
+      const whole = Number.isInteger(b.position), isRead = b.position <= read, w = when(b.release_date, today);
       const btn = !whole ? '' : isRead
-        ? (b.position === read ? ` <button data-click="read-to" data-id="${s.id}" data-pos="${b.position - 1}">Undo</button>` : '')
-        : ` <button data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read up to here</button>`;
+        ? (b.position === read ? `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position - 1}">Undo</button>` : '')
+        : `<button class="small" data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read to here</button>`;
       return `<li class="${isRead ? 'read' : ''}">
         ${img(b.cover_key ?? `sb-${s.id}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover small')}
-        <div><strong><a href="#/book/${s.id}/${b.position}">#${pos(b.position)} ${esc(b.title)}</a></strong><br><span class="meta">${esc(b.release_date ?? 'TBA')} · ${isRead ? 'Read' : 'Unread'}</span>${btn}</div></li>`;
-    }).join('')}</ul>`
-      : '<p>No books fetched yet. Use “Check now” in More.</p>'}`;
+        <div class="grow"><a class="booklink" href="#/book/${s.id}/${b.position}"><span class="num">#${pos(b.position)}</span> ${esc(b.title)}</a><br>
+          ${isRead ? '<span class="chip read">✓ Read</span>' : chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></div>${btn}</li>`;
+    }).join('')}</ul>` : '<p>No books fetched yet. Use “Check now” in More.</p>'}`;
 }
 
 async function viewBook(sid, position) {
   sid = Number(sid); position = Number(position);
   const s = await store.get('series', sid), b = await store.get('series_book', sbKey(sid, position));
   if (!s || !b) return '<p>No such book. <a href="#/">Back</a></p>';
-  const read = await maxRead(store, sid), isRead = b.position <= read, today = nowIso().slice(0, 10);
-  const status = !b.release_date ? 'Release date not announced'
-    : b.release_date.slice(0, 10) <= today ? `Released ${esc(b.release_date)}` : `Coming ${esc(b.release_date)}`;
+  const read = await maxRead(store, sid), isRead = b.position <= read, w = when(b.release_date);
   const whole = Number.isInteger(b.position);
   const btn = !whole ? '' : isRead
-    ? (b.position === read ? `<button data-click="read-to" data-id="${sid}" data-pos="${b.position - 1}" data-back="1">Undo read</button>` : '')
-    : `<button data-click="read-to" data-id="${sid}" data-pos="${b.position}" data-back="1">Read up to here</button>`;
+    ? (b.position === read ? `<button data-click="read-to" data-id="${sid}" data-pos="${b.position - 1}">Undo read</button>` : '')
+    : `<button class="primary" data-click="read-to" data-id="${sid}" data-pos="${b.position}">Read up to here</button>`;
   afterRender = async () => {
     const box = document.getElementById('book-more');
     if (!box) return;
@@ -152,32 +181,34 @@ async function viewBook(sid, position) {
       box.innerHTML = bits.join('');
     } catch (e) { box.innerHTML = `<p class="meta">Details unavailable: ${esc(msg(e))}</p>`; }
   };
-  return `<p><a href="#/series/${sid}">← ${esc(s.name)}</a></p>
-    <div class="card" style="margin-bottom:1rem">
+  return `<p><a class="back" href="#/series/${sid}">← ${esc(s.name)}</a></p>
+    <div class="hero">
       ${img(b.cover_key ?? `sb-${sid}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover big')}
-      <div><h1>${esc(b.title)}</h1>
-        <p class="meta">${esc(s.author ?? 'Unknown author')}${s.author ? ` (<a href="#/search?q=${encodeURIComponent(s.author)}">follow author</a>)` : ''} · ${esc(s.name)} #${pos(b.position)}</p>
-        <p>${status}</p><p class="meta">${isRead ? 'Read' : 'Unread'}</p>${btn}</div></div>
+      <div class="body"><h1>${esc(b.title)}</h1>
+        <p class="meta">${esc(s.author ?? 'Unknown author')}${s.author ? ` · <a href="#/search?q=${encodeURIComponent(s.author)}">follow author</a>` : ''}</p>
+        <p class="meta">${esc(s.name)} · #${pos(b.position)}</p>
+        <p>${isRead ? '<span class="chip read">✓ Read</span> ' : ''}${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></p></div></div>
+    ${btn ? `<div class="actions">${btn}</div>` : ''}
     <div id="book-more"><p class="meta">Loading details…</p></div>`;
 }
 
 async function viewAuthor(id) {
   const a = await store.get('author', Number(id));
   if (!a) return '<p>No such author. <a href="#/">Back</a></p>';
-  const today = nowIso().slice(0, 10);
+  const today = todayIso();
   const books = (await store.all('author_book')).filter((r) => r.author_id === a.hardcover_author_id)
     .sort((x, y) => (y.release_date ?? '9999').localeCompare(x.release_date ?? '9999'));
   const up = books.filter((b) => !b.release_date || b.release_date.slice(0, 10) > today), out = books.filter((b) => !up.includes(b));
-  const row = (b) => `<li>${img(null, b.cover_url, b.title, a.name, 'cover small')}<div><strong>${esc(b.title)}</strong><br>
-    <span class="meta">${esc(b.release_date ?? 'TBA')}</span></div></li>`;
-  return `<p><a href="#/">← Following</a></p>
-    <div class="card" style="margin-bottom:1rem">${img(null, a.cover_url, a.name, a.name, 'cover big')}
-      <div><h1>${esc(a.name)}${a.muted ? ' <span class="badge">Muted</span>' : ''}</h1>
-        <p class="meta">${a.last_checked_at ? 'Last checked ' + esc(a.last_checked_at) : 'Not checked yet'} · ${books.length} books</p>
-        <button data-click="mute-author" data-id="${a.hardcover_author_id}">${a.muted ? 'Unmute' : 'Mute'}</button>
-        <button data-click="remove-author" data-id="${a.hardcover_author_id}" data-name="${esc(a.name)}">Remove</button></div></div>
-    ${up.length ? `<h2>Upcoming / undated</h2><ul class="rows">${up.map(row).join('')}</ul>` : ''}
-    <h2>Released</h2>${out.length ? `<ul class="rows">${out.map(row).join('')}</ul>` : '<p>No books listed.</p>'}`;
+  const row = (b) => { const w = when(b.release_date, today); return `<li>${img(null, b.cover_url, b.title, a.name, 'cover small')}
+    <div class="grow"><strong>${esc(b.title)}</strong><br>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></div></li>`; };
+  return `<p><a class="back" href="#/">← Following</a></p>
+    <div class="hero">${img(null, a.cover_url, a.name, a.name, 'cover big')}
+      <div class="body"><h1>${esc(a.name)}${a.muted ? ' <span class="badge">Muted</span>' : ''}</h1>
+        <p class="meta">${books.length} books · ${a.last_checked_at ? 'checked ' + esc(a.last_checked_at.slice(0, 10)) : 'not checked yet'}</p></div></div>
+    <div class="actions">${menu(a.name, `<button data-click="mute-author" data-id="${a.hardcover_author_id}">${a.muted ? 'Unmute' : 'Mute'}</button>
+      <button class="danger" data-click="remove-author" data-id="${a.hardcover_author_id}" data-name="${esc(a.name)}">Remove</button>`)}</div>
+    ${up.length ? `<h2 class="label">Upcoming / undated</h2><ul class="rows">${up.map(row).join('')}</ul>` : ''}
+    <h2 class="label">Released</h2>${out.length ? `<ul class="rows">${out.map(row).join('')}</ul>` : '<p>No books listed.</p>'}`;
 }
 
 function resultsHtml(r, followed, followedAuthors = new Set()) {
@@ -242,14 +273,16 @@ async function viewSearch(params) {
 async function viewUpdates() {
   const list = (await updates(store)).sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? '')).slice(0, 100);
   const unseen = list.filter((n) => !n.seen_at).length;
-  return `<h1>Updates</h1>
-    ${unseen ? '<p><button data-click="mark-seen">Mark all seen</button></p>' : ''}
-    ${list.length ? `<ul class="cards">${list.map((n) => `<li class="card ${n.seen_at ? '' : 'unseen'}">
+  const tone = { announced: 'near', date_changed: 'warn', released: 'ok' };
+  return `<div class="pagehead"><h1>Updates</h1>${unseen ? '<button class="small" data-click="mark-seen">Mark all seen</button>' : ''}</div>
+    ${list.length ? `<ul class="cards">${list.map((n) => { const w = when(n.release_date); return `<li class="card ${n.seen_at ? '' : 'unseen'}">
+        <a class="cardlink" href="#/${n.author_id != null ? 'author/' + n.author_id : 'series/' + n.series_id}">
         ${img(n.author_id != null ? null : (n.cover_key ?? `sb-${n.series_id}-${n.position}`), n.author_id != null ? n.cover_url : null, n.title ?? '', n.series_name)}
-        <div><h3><a href="#/${n.author_id != null ? 'author/' + n.author_id : 'series/' + n.series_id}">${esc(n.series_name)}</a>${n.author_id != null ? ' <span class="badge">Author</span>' : ''}</h3>
-        <p><strong>${n.position != null ? '#' + pos(n.position) + ' ' : ''}${esc(n.title)}</strong></p>
-        <p class="meta">${LABEL[n.kind]} · ${n.kind === 'date_changed' ? `${esc(n.detail ?? 'TBA')} → ${esc(n.release_date ?? 'TBA')}` : esc(n.release_date ?? 'date TBA')}</p></div></li>`).join('')}</ul>`
-      : '<p>Nothing yet. New announcements, date changes and releases for series you follow show up here after a check.</p>'}`;
+        <div class="body"><p><span class="chip ${tone[n.kind]}">${LABEL[n.kind]}</span></p>
+        <h2>${n.position != null ? '#' + pos(n.position) + ' ' : ''}${esc(n.title)}</h2>
+        <p class="meta">${esc(n.series_name)}${n.author_id != null ? ' · author' : ''}</p>
+        <p class="meta">${n.kind === 'date_changed' ? `${esc(fmtDate(n.detail))} → ${esc(fmtDate(n.release_date))}` : `${esc(fmtDate(n.release_date))}${w.tone === 'tba' ? '' : ' · ' + esc(w.text)}`}</p></div></a></li>`; }).join('')}</ul>`
+      : '<p>Nothing yet. New announcements, date changes and releases for series and authors you follow show up here after a check.</p>'}`;
 }
 
 async function viewManual() {
