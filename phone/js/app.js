@@ -4,7 +4,7 @@ import { openIdbStore } from './store-idb.js';
 import { HardcoverClient, HardcoverError } from './hardcover.js';
 import { CoverCache, placeholderUri } from './covers.js';
 import { getSetting, setSetting, todayIso, sbKey, notifying, maxRead, setProgress, removeSeries, unremoveSeries, lastReleased, nowIso } from './db.js';
-import { followAuthor, removeAuthor } from './authors.js';
+import { followAuthor, removeAuthor, refreshAuthorMeta } from './authors.js';
 import { fmtDate, when } from './format.js';
 import { buildRecs, loadRecs, dismissRec, recsStale } from './recs.js';
 import { runCheck, updates, pendingEvents, markAllSeen, dismissUpdate, dismissAllUpdates } from './check.js';
@@ -190,19 +190,40 @@ async function viewAuthor(id) {
   const a = await store.get('author', Number(id));
   if (!a) return '<p>No such author. <a href="#/following">Back</a></p>';
   const today = todayIso();
-  const books = (await store.all('author_book')).filter((r) => r.author_id === a.hardcover_author_id)
-    .sort((x, y) => (y.release_date ?? '9999').localeCompare(x.release_date ?? '9999'));
-  const up = books.filter((b) => !b.release_date || b.release_date.slice(0, 10) > today), out = books.filter((b) => !up.includes(b));
-  const row = (b) => { const w = when(b.release_date, today); return `<li>${img(null, b.cover_url, b.title, a.name, 'cover small')}
-    <div class="grow"><strong>${esc(b.title)}</strong><br>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date))}</span></div></li>`; };
+  const books = (await store.all('author_book')).filter((r) => r.author_id === a.hardcover_author_id);
+  if (books.some((r) => r.series_id === undefined)) {            // stored before series info existed: fill it in quietly, then redraw
+    afterRender = async () => { try { if (await refreshAuthorMeta(store, client, a.hardcover_author_id) && location.hash === `#/author/${a.hardcover_author_id}`) await route(); } catch { /* shown as-is */ } };
+  }
+  const followed = new Map((await store.all('series')).map((s) => [s.hardcover_series_id, s]));
+  const isUp = (b) => !b.release_date || b.release_date.slice(0, 10) > today;
+  // one group per series (a slot held by several rows, e.g. translations, shows once), then standalone books
+  const slots = new Map(), groups = new Map(), stand = [];
+  for (const b of books) {
+    if (b.series_id == null || b.series_position == null) { (b.series_id == null ? stand : (groups.get(b.series_id) ?? groups.set(b.series_id, { id: b.series_id, name: b.series_name, books: [] }).get(b.series_id)).books).push(b); continue; }
+    const k = `${b.series_id}:${b.series_position}`;
+    if (!slots.has(k) || (b.users_count ?? 0) > (slots.get(k).users_count ?? 0)) slots.set(k, b);
+  }
+  for (const b of slots.values()) (groups.get(b.series_id) ?? groups.set(b.series_id, { id: b.series_id, name: b.series_name, books: [] }).get(b.series_id)).books.push(b);
+  const newest = (g) => g.books.map((b) => b.release_date ?? '9999').sort().pop();
+  const list = [...groups.values()].sort((x, y) => (+y.books.some(isUp) - +x.books.some(isUp)) || newest(y).localeCompare(newest(x)) || (x.name ?? '').localeCompare(y.name ?? ''));
+  const row = (b, withPos) => { const w = when(b.release_date, today); return `<li>${img(null, b.cover_url, b.title, a.name, 'cover small')}
+    <div class="grow"><strong>${withPos && b.series_position != null ? `<span class="num">#${pos(b.series_position)}</span> ` : ''}${esc(b.title)}</strong><br>${chip(w)} <span class="meta">${w.tone === 'tba' ? '' : esc(fmtDate(b.release_date, today))}</span></div></li>`; };
+  const section = (g) => {
+    const mine = followed.get(g.id), cover = g.books.find((b) => b.cover_url)?.cover_url ?? '';
+    g.books.sort((x, y) => (x.series_position ?? 1e9) - (y.series_position ?? 1e9));
+    return `<div class="grouphead"><h2 class="label">${mine ? `<a href="#/series/${mine.id}">${esc(g.name)}</a>` : esc(g.name)} <span class="meta">· ${g.books.length} book${g.books.length > 1 ? 's' : ''}</span></h2>
+      ${mine ? '<span class="badge">Following</span>' : `<button class="small" data-click="rec-follow" data-hc="${g.id}" data-name="${esc(g.name)}" data-author="${esc(a.name)}" data-cover="${esc(cover)}">Follow series</button>`}</div>
+      <ul class="rows">${g.books.map((b) => row(b, true)).join('')}</ul>`;
+  };
+  stand.sort((x, y) => (y.release_date ?? '9999').localeCompare(x.release_date ?? '9999'));
   return `<p><a class="back" href="#/following">← Following</a></p>
     <div class="hero">${img(null, a.cover_url, a.name, a.name, 'cover big')}
       <div class="body"><h1>${esc(a.name)}${a.muted ? ' <span class="badge">Muted</span>' : ''}</h1>
-        <p class="meta">${books.length} books · ${a.last_checked_at ? 'checked ' + esc(a.last_checked_at.slice(0, 10)) : 'not checked yet'}</p></div></div>
+        <p class="meta">${books.length ? `${list.length} series · ${stand.length} standalone` : 'No books listed'} · ${a.last_checked_at ? 'checked ' + esc(a.last_checked_at.slice(0, 10)) : 'not checked yet'}</p></div></div>
     <div class="actions">${menu(a.name, `<button data-click="mute-author" data-id="${a.hardcover_author_id}">${a.muted ? 'Unmute' : 'Mute'}</button>
       <button class="danger" data-click="remove-author" data-id="${a.hardcover_author_id}" data-name="${esc(a.name)}">Remove</button>`)}</div>
-    ${up.length ? `<h2 class="label">Upcoming / undated</h2><ul class="rows">${up.map(row).join('')}</ul>` : ''}
-    <h2 class="label">Released</h2>${out.length ? `<ul class="rows">${out.map(row).join('')}</ul>` : '<p>No books listed.</p>'}`;
+    ${list.map(section).join('')}
+    ${stand.length ? `<div class="grouphead"><h2 class="label">Standalone &amp; other</h2></div><ul class="rows">${stand.map((b) => row(b, false)).join('')}</ul>` : ''}`;
 }
 
 function resultsHtml(r, followed, followedAuthors = new Set()) {

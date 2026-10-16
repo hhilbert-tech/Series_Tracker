@@ -143,6 +143,8 @@ div.cardlink { cursor: default; }
 .card.has-actions .cardlink { flex: 1 1 100%; padding-bottom: .4rem; }
 .card-actions { flex: 1 1 100%; display: flex; gap: .5rem; padding: 0 .8rem .8rem; }
 .head-actions { display: flex; gap: .5rem; }
+.grouphead { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-top: 1.25rem; }
+.grouphead h2.label { margin: 0 0 .25rem; }
 .row-actions { display: flex; gap: .5rem; margin-top: .5rem; }
 .rows .num { color: var(--muted); font-weight: 600; }
 .rows li.read .booklink { font-weight: 500; }

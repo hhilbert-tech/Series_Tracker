@@ -25,7 +25,7 @@ query AuthorBooks($id: Int!) {
             book: {canonical_id: {_is_null: true}, is_partial_book: {_eq: false}, compilation: {_eq: false}}}
     order_by: {book: {release_date: desc_nulls_first}}
     limit: 300
-  ) { contribution book { id title release_date image { url } } }
+  ) { contribution book { id title release_date users_count image { url } book_series { position series { id name } } } }
 }`;
 const SERIES_FIELDS = 'id name is_completed author { name }';
 const isbnQ = (field) => `
@@ -220,18 +220,27 @@ export class HardcoverClient {
     return out;
   }
 
-  // Every main (non-edition, non-compilation) book credited to the author, newest first.
+  // Every main (non-edition, non-compilation) book credited to the author, newest first, with its series
+  // when it has one. Translations/duplicates of the same series slot collapse to the most-read entry.
   async authorBooks(authorId) {
     const data = await this.gql(AUTHOR_BOOKS_Q, { id: Number(authorId) });
-    const seen = new Set(), out = [];
+    const seen = new Set(), all = [];
     for (const row of data.contributions ?? []) {
       const b = row.book ?? {}, c = row.contribution;
       if (b.id === undefined || !b.title || seen.has(b.id)) continue;
       if (c && String(c).toLowerCase() !== 'author') continue;           // skip illustrators, translators, etc.
       seen.add(b.id);
-      out.push({ hardcover_book_id: Number(b.id), title: b.title, release_date: dateOf(b.release_date), cover_url: b.image?.url ?? null });
+      const bs = (b.book_series ?? []).find((x) => x?.series?.id && num(x.position) !== null) ?? (b.book_series ?? []).find((x) => x?.series?.id);
+      all.push({ hardcover_book_id: Number(b.id), title: b.title, release_date: dateOf(b.release_date), cover_url: b.image?.url ?? null,
+        series_id: bs ? Number(bs.series.id) : null, series_name: bs?.series?.name ?? null, series_position: bs ? num(bs.position) : null,
+        users_count: Number(b.users_count) || 0 });
     }
-    return out;
+    const best = new Map();
+    for (const b of all) if (b.series_id != null && b.series_position != null) {
+      const k = `${b.series_id}:${b.series_position}`;
+      if (!best.has(k) || b.users_count > best.get(k).users_count) best.set(k, b);
+    }
+    return all.filter((b) => b.series_id == null || b.series_position == null || best.get(`${b.series_id}:${b.series_position}`) === b);
   }
 
   // Series, books and authors in ONE request (three aliased searches): searching used to cost three.

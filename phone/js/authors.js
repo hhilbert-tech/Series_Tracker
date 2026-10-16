@@ -14,6 +14,23 @@ async function log(store, e, suppressed = false) {
   return store.add('notification_log', { key, ...e, suppressed: suppressed ? 1 : 0, seen_at: suppressed ? nowIso() : null, created_at: nowIso() });
 }
 
+const seriesFields = (b) => ({ series_id: b.series_id ?? null, series_name: b.series_name ?? null, series_position: b.series_position ?? null, users_count: b.users_count ?? 0 });
+
+// Fill in series info on books stored before it was tracked, quietly (no events, no new rows), and drop stored
+// rows the refined list no longer contains (translations of the same slot). Only legacy rows are ever dropped.
+export async function refreshAuthorMeta(store, client, aid) {
+  const books = await client.authorBooks(aid);
+  if (!books.length) return false;
+  const fresh = new Map(books.map((b) => [b.hardcover_book_id, b]));
+  for (const r of await store.all('author_book')) {
+    if (r.author_id !== aid) continue;
+    const b = fresh.get(r.hardcover_book_id);
+    if (b) await store.put('author_book', { ...r, ...seriesFields(b) });
+    else if (r.series_id === undefined) await store.delete('author_book', r.key);
+  }
+  return true;
+}
+
 export async function syncAuthor(store, author, books, today, baseline) {
   const aid = author.hardcover_author_id;
   const inSeries = new Set((await store.all('series_book')).map((r) => r.hardcover_book_id));
@@ -26,7 +43,7 @@ export async function syncAuthor(store, author, books, today, baseline) {
     const row = existing.get(hid);
     if (!row) {
       await store.put('author_book', { key: abKey(aid, hid), author_id: aid, hardcover_book_id: hid, title: b.title, release_date: d,
-        cover_url: b.cover_url ?? null, first_seen_at: nowIso() });
+        cover_url: b.cover_url ?? null, first_seen_at: nowIso(), ...seriesFields(b) });
       if (dup) continue;
       if (baseline) { if (d && !past && await log(store, { ...base, kind: 'announced' })) ev('announced'); continue; }
       if (past) { if (await log(store, { ...base, kind: 'released' })) ev('released'); }
@@ -34,7 +51,7 @@ export async function syncAuthor(store, author, books, today, baseline) {
       continue;
     }
     const old = row.release_date ?? null;
-    await store.put('author_book', { ...row, title: b.title, release_date: d, cover_url: b.cover_url ?? row.cover_url });
+    await store.put('author_book', { ...row, title: b.title, release_date: d, cover_url: b.cover_url ?? row.cover_url, ...seriesFields(b) });
     if (dup || d === old) continue;
     if (past) { if (!isPast(old, today) && await log(store, { ...base, kind: 'released' })) ev('released'); }
     else { await log(store, { ...base, kind: 'date_changed', detail: old }); ev('date_changed', old); }

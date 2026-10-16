@@ -74,3 +74,35 @@ test('authorBooks normalises, skips non-author credits and duplicates', async ()
   } });
   assert.deepEqual((await c.authorBooks(9)).map((b) => [b.hardcover_book_id, b.release_date]), [[1, '2020-01-01'], [3, null]]);
 });
+
+test('authorBooks carries series info and collapses translations of the same series slot', async () => {
+  const json = (body) => new Response(JSON.stringify(body), { status: 200 });
+  const bk = (id, title, users, bs, extra = {}) => ({ contribution: null, book: { id, title, users_count: users, release_date: '2021-01-01', image: null, book_series: bs, ...extra } });
+  const S = (pos) => [{ position: pos, series: { id: 5, name: 'Faithful' } }];
+  const c = new HardcoverClient({ getToken: () => 't', limiter: { async acquire() {} }, fetch: async () => json({ data: { contributions: [
+    bk(1, 'The Shadow of the Gods', 9000, S(1)), bk(2, 'Тінь богів', 12, S(1)), bk(3, 'Tanrıların Gölgesi', 30, S(1)),
+    bk(4, 'The Hunger of the Gods', 7000, S(2)), bk(5, 'Standalone Tale', 100, []), bk(6, 'Odd one', 5, [{ position: null, series: { id: 8, name: 'Loose' } }])] } }) });
+  const out = await c.authorBooks(9);
+  assert.deepEqual(out.map((b) => b.title), ['The Shadow of the Gods', 'The Hunger of the Gods', 'Standalone Tale', 'Odd one']);
+  assert.deepEqual([out[0].series_id, out[0].series_name, out[0].series_position], [5, 'Faithful', 1]);
+  assert.equal(out[2].series_id, null);
+  assert.equal(out[3].series_id, 8);
+});
+
+test('series info is stored; refreshAuthorMeta fills legacy rows quietly and drops only legacy leftovers', async () => {
+  const { refreshAuthorMeta } = await import('../js/authors.js');
+  const store = new MemStore(), client = new FakeClient();
+  const sb = (id, title, date, sid, name, p) => ({ ...ab(id, title, date), series_id: sid, series_name: name, series_position: p, users_count: 10 });
+  client.authors[9] = [sb(1, 'One', PAST, 5, 'Saga', 1)];
+  await followAuthor(store, client, A, TODAY);
+  assert.equal((await store.get('author_book', '9:1')).series_name, 'Saga');
+  // a legacy row (no series fields) for a translation, and one for a real book
+  await store.put('author_book', { key: '9:2', author_id: 9, hardcover_book_id: 2, title: 'Тінь', release_date: PAST });
+  await store.put('author_book', { key: '9:3', author_id: 9, hardcover_book_id: 3, title: 'Three', release_date: PAST });
+  client.authors[9] = [sb(1, 'One', PAST, 5, 'Saga', 1), sb(3, 'Three', PAST, 5, 'Saga', 3)];
+  const before = (await store.all('notification_log')).length;
+  assert.equal(await refreshAuthorMeta(store, client, 9), true);
+  assert.equal(await store.get('author_book', '9:2'), undefined);          // translation dropped
+  assert.equal((await store.get('author_book', '9:3')).series_position, 3); // filled in
+  assert.equal((await store.all('notification_log')).length, before);       // no events
+});
