@@ -3,7 +3,7 @@
 import { openIdbStore } from './store-idb.js';
 import { HardcoverClient, HardcoverError } from './hardcover.js';
 import { CoverCache, placeholderUri } from './covers.js';
-import { getSetting, setSetting, maxRead, setProgress, removeSeries, lastReleased, nowIso } from './db.js';
+import { getSetting, setSetting, sbKey, maxRead, setProgress, removeSeries, lastReleased, nowIso } from './db.js';
 import { runCheck, updates, pendingEvents, markAllSeen } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
 import { KEYS } from './store-base.js';
@@ -74,7 +74,7 @@ function seriesCard(s, read, next) {
     <div>
       <h2><a href="#/series/${s.id}">${esc(s.name)}</a>${s.muted ? ' <span class="badge">Muted</span>' : ''}</h2>
       <p class="meta">${esc(s.author ?? 'Unknown author')} · read up to #${pos(read)}</p>
-      <p>${next ? `Next: #${pos(next.position)} ${esc(next.title)} — ${esc(next.release_date ?? 'date TBA')}`
+      <p>${next ? `Next: <a href="#/book/${s.id}/${next.position}">#${pos(next.position)} ${esc(next.title)}</a> — ${esc(next.release_date ?? 'date TBA')}`
         : s.last_checked_at ? 'No unread book announced yet' : 'Not checked yet'}</p>
       <button data-click="mute" data-id="${s.id}">${s.muted ? 'Unmute' : 'Mute'}</button>
       <button data-click="remove" data-id="${s.id}" data-name="${esc(s.name)}">Remove</button>
@@ -120,9 +120,40 @@ async function viewSeries(id) {
         : ` <button data-click="read-to" data-id="${s.id}" data-pos="${b.position}">Read up to here</button>`;
       return `<li class="${isRead ? 'read' : ''}">
         ${img(b.cover_key ?? `sb-${s.id}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover small')}
-        <div><strong>#${pos(b.position)} ${esc(b.title)}</strong><br><span class="meta">${esc(b.release_date ?? 'TBA')} · ${isRead ? 'Read' : 'Unread'}</span>${btn}</div></li>`;
+        <div><strong><a href="#/book/${s.id}/${b.position}">#${pos(b.position)} ${esc(b.title)}</a></strong><br><span class="meta">${esc(b.release_date ?? 'TBA')} · ${isRead ? 'Read' : 'Unread'}</span>${btn}</div></li>`;
     }).join('')}</ul>`
       : '<p>No books fetched yet. Use “Check now” in More.</p>'}`;
+}
+
+async function viewBook(sid, position) {
+  sid = Number(sid); position = Number(position);
+  const s = await store.get('series', sid), b = await store.get('series_book', sbKey(sid, position));
+  if (!s || !b) return '<p>No such book. <a href="#/">Back</a></p>';
+  const read = await maxRead(store, sid), isRead = b.position <= read, today = nowIso().slice(0, 10);
+  const status = !b.release_date ? 'Release date not announced'
+    : b.release_date.slice(0, 10) <= today ? `Released ${esc(b.release_date)}` : `Coming ${esc(b.release_date)}`;
+  const whole = Number.isInteger(b.position);
+  const btn = !whole ? '' : isRead
+    ? (b.position === read ? `<button data-click="read-to" data-id="${sid}" data-pos="${b.position - 1}" data-back="1">Undo read</button>` : '')
+    : `<button data-click="read-to" data-id="${sid}" data-pos="${b.position}" data-back="1">Read up to here</button>`;
+  afterRender = async () => {
+    const box = document.getElementById('book-more');
+    if (!box) return;
+    if (!b.hardcover_book_id) { box.textContent = ''; return; }
+    try {
+      const d = await client.bookDetails(b.hardcover_book_id);
+      const bits = [d.pages ? `<p class="meta">${d.pages} pages</p>` : '',
+        d.description ? `<p class="desc">${esc(d.description).replace(/\n+/g, '</p><p class="desc">')}</p>` : '<p class="meta">No description on Hardcover.</p>'];
+      box.innerHTML = bits.join('');
+    } catch (e) { box.innerHTML = `<p class="meta">Details unavailable: ${esc(msg(e))}</p>`; }
+  };
+  return `<p><a href="#/series/${sid}">← ${esc(s.name)}</a></p>
+    <div class="card" style="margin-bottom:1rem">
+      ${img(b.cover_key ?? `sb-${sid}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover big')}
+      <div><h1>${esc(b.title)}</h1>
+        <p class="meta">${esc(s.author ?? 'Unknown author')} · ${esc(s.name)} #${pos(b.position)}</p>
+        <p>${status}</p><p class="meta">${isRead ? 'Read' : 'Unread'}</p>${btn}</div></div>
+    <div id="book-more"><p class="meta">Loading details…</p></div>`;
 }
 
 function resultsHtml(r, followed) {
@@ -267,10 +298,10 @@ async function route() {
   const [path, qs = ''] = location.hash.replace(/^#/, '').split('?');
   const params = new URLSearchParams(qs);
   const [, seg, arg] = path.split('/');
-  const tab = { '': 'home', series: 'home', search: 'search', updates: 'updates' }[seg ?? ''] ?? 'more';
+  const tab = { '': 'home', series: 'home', search: 'search', updates: 'updates', book: 'home' }[seg ?? ''] ?? 'more';
   let html;
   try {
-    html = await ({ '': viewHome, series: () => viewSeries(arg), search: () => viewSearch(params), updates: viewUpdates,
+    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), search: () => viewSearch(params), updates: viewUpdates,
       manual: viewManual, review: () => viewReview(params), more: viewMore }[seg ?? ''] ?? viewHome)();
   } catch (e) { html = `<p class="error">${esc(msg(e))}</p>`; }
   $app.innerHTML = html;

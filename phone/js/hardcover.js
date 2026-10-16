@@ -36,7 +36,7 @@ query MyLibrary {
 }`;
 export const SCHEMA_Q = 'query($n: String!) { __type(name: $n) { fields { name } } }';
 export const EXPECTED_FIELDS = {
-  books: ['id', 'title', 'release_date', 'image', 'canonical_id', 'is_partial_book', 'compilation', 'users_count', 'contributions', 'book_series'],
+  books: ['id', 'title', 'release_date', 'image', 'canonical_id', 'is_partial_book', 'compilation', 'users_count', 'contributions', 'book_series', 'description', 'pages'],
   editions: ['isbn_13', 'isbn_10', 'book'],
   series: ['id', 'name', 'is_completed', 'author', 'books_count'],
   book_series: ['position', 'series', 'book', 'book_id', 'series_id'],
@@ -95,6 +95,14 @@ export class HardcoverClient {
       out.push({ position: pos, hardcover_book_id: Number(b.id), title: b.title ?? '', release_date: dateOf(b.release_date), cover_url: b.image?.url ?? null });
     }
     return out.sort((a, b) => a.position - b.position);
+  }
+
+  // Description and page count for one book (shown on the book page; fetched on demand).
+  async bookDetails(bookId) {
+    const data = await this._cached('bd' + bookId, () => this.gql(
+      'query BookDetails($id: Int!) { books(where: {id: {_eq: $id}}, limit: 1) { description pages } }', { id: Number(bookId) }));
+    const b = data.books?.[0] ?? {};
+    return { description: b.description ? String(b.description) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null };
   }
 
   async findByIsbn(isbn) {

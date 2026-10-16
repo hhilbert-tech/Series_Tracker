@@ -76,3 +76,10 @@ test('findByIsbn shape', async () => {
   const none = make(async () => json({ data: { editions: [] } }));
   assert.equal(await none.findByIsbn('9780000000000'), null);
 });
+
+test('bookDetails returns description and pages, tolerating gaps', async () => {
+  const c = make(async () => json({ data: { books: [{ description: 'A tale.', pages: 320 }] } }));
+  assert.deepEqual(await c.bookDetails(5), { description: 'A tale.', pages: 320 });
+  const e = make(async () => json({ data: { books: [] } }));
+  assert.deepEqual(await e.bookDetails(6), { description: null, pages: null });
+});

@@ -82,3 +82,4 @@ pre.out { white-space: pre-wrap; margin: .5rem 0 0; font-size: .85rem; }
 @media (min-width: 40rem) { .cards { grid-template-columns: 1fr 1fr; } }
 .inline input[type=search] { flex: 1 1 12rem; width: auto; }
 #results { margin-top: 1rem; }
+.desc { line-height: 1.5; margin: 0 0 .8rem; }
