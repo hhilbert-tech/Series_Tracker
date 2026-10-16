@@ -404,32 +404,45 @@ const recCard = (r) => `<li class="card has-actions">
   <div class="card-actions"><button class="small primary" data-click="rec-follow" data-hc="${r.hardcover_series_id}" data-name="${esc(r.name)}" data-author="${esc(r.author ?? '')}" data-cover="${esc(r.cover_url ?? '')}" data-complete="${r.complete ? 1 : ''}">Follow</button>
     <button class="small" data-click="rec-dismiss" data-hc="${r.hardcover_series_id}">Not interested</button></div></li>`;
 
-async function viewHome() {
-  const today = todayIso();
-  const { items } = await collectUpcoming(today);
-  const out = items.filter((i) => i.date <= today), soon = items.filter((i) => i.date > today);
-  const shop = await getSetting(store, 'store', 'hardcover'), shown = new Set(out.map((i) => i.href)), nextUp = [];
-  const allSb = await store.all('series_book');
+// Released, unread next book of each started series (the "Continue reading" shelf).
+async function collectNext(today, skip = new Set()) {
+  const shop = await getSetting(store, 'store', 'hardcover'), allSb = await store.all('series_book'), out = [];
   for (const s of (await store.all('series')).filter((x) => !x.muted).sort((x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: 'base' }))) {
     const read = await maxRead(store, s.id), rows = allSb.filter((r) => r.series_id === s.id).sort((x, y) => x.position - y.position);
     if (!rows.some((r) => isRead(r, read))) continue;                      // only series you have started
     const n = rows.find((r) => Number.isInteger(r.position) && !isRead(r, read) && r.release_date && r.release_date.slice(0, 10) <= today);
-    if (!n || shown.has(`#/book/${s.id}/${n.position}`)) continue;
-    nextUp.push({ date: n.release_date.slice(0, 10), title: `#${pos(n.position)} ${n.title}`, sub: s.name, href: `#/book/${s.id}/${n.position}`, ck: n.cover_key ?? `sb-${s.id}-${n.position}`,
-      fb: n.cover_key ? '' : n.cover_url, seed: s.name, author: s.author,
+    if (!n || skip.has(`#/book/${s.id}/${n.position}`)) continue;
+    out.push({ date: n.release_date.slice(0, 10), title: `#${pos(n.position)} ${n.title}`, name: n.title, num: n.position, sub: s.name, href: `#/book/${s.id}/${n.position}`,
+      ck: n.cover_key ?? `sb-${s.id}-${n.position}`, fb: n.cover_key ? '' : n.cover_url, seed: s.name, author: s.author,
       actions: `<button class="small primary" data-click="toggle-read" data-id="${s.id}" data-pos="${n.position}">Mark read</button>
         <a class="btn small" target="_blank" rel="noopener" href="${esc(storeLink(shop, n.title, s.author ?? ''))}">Get it ↗</a>` });
   }
-  const unseen = (await pendingEvents(store)).length;
-  const nSeries = (await store.all('series')).length, nAuthors = (await store.all('author')).length;
-  const hasToken = Boolean(await getSetting(store, 'hc_token', ''));
-  const backupDue = (nSeries || nAuthors) && (Date.now() - Date.parse((await getSetting(store, 'last_backup', null)) ?? (await getSetting(store, 'first_seen', nowIso())))) > 30 * 864e5;
-  const recs = await loadRecs(store);
-  const sort = await getSetting(store, 'recs_sort', 'popular');
+  return out;
+}
+async function sortedRecs() {
+  const recs = await loadRecs(store), sort = await getSetting(store, 'recs_sort', 'popular');
   if (recs) recs.items = [...recs.items].sort(sort === 'rating' ? (x, y) => (y.rating ?? 0) - (x.rating ?? 0) || y.rank - x.rank
     : sort === 'authors' ? (x, y) => (+(y.kind === 'author') - +(x.kind === 'author')) || y.rank - x.rank : (x, y) => y.rank - x.rank);
-  const recsNote = !hasToken ? '<p class="meta">Add your Hardcover token (More) to get recommendations.</p>'
-    : !nSeries && !nAuthors ? '<p class="meta">Follow a series or author and suggestions will appear here.</p>'
+  return { recs, sort };
+}
+const SORTS = [['popular', 'Most similar'], ['rating', 'Top rated'], ['authors', 'My authors']];
+const sortMenu = (sort, hasToken) => `<details class="menu inline"><summary aria-label="Sort and refresh suggestions">${esc(SORTS.find(([k]) => k === sort)?.[1] ?? 'Sort')} ▾</summary><div class="menu-items">
+  ${SORTS.map(([k, v]) => `<button data-click="recs-sort" data-value="${k}" aria-pressed="${sort === k}">${sort === k ? '✓ ' : ''}${v}</button>`).join('')}
+  ${hasToken ? '<button data-click="recs-refresh">Refresh suggestions</button>' : ''}</div></details>`;
+const secHead = (label, href, extra = '') => `<div class="sechead"><h2 class="label">${label}</h2><span class="sechead-r">${extra}${href ? `<a href="${href}">See all →</a>` : ''}</span></div>`;
+// One cover in a horizontal shelf: cover, two-line title, one-line subtitle; optional ✕ (dismiss) in the corner.
+const shelfItem = ({ href, ck, fb, title, seed, author, line2, x }) => `<li class="shelf-item"><a href="${href}">${img(ck, fb, title, seed, 'cover shelfcover', author)}
+  <span class="t">${esc(title)}</span>${line2 ? `<span class="s">${line2}</span>` : ''}</a>${x ?? ''}</li>`;
+
+async function viewHome() {
+  const today = todayIso();
+  const { items } = await collectUpcoming(today);
+  const out = items.filter((i) => i.date <= today), soon = items.filter((i) => i.date > today);
+  const nextUp = await collectNext(today, new Set(out.map((i) => i.href)));
+  const nSeries = (await store.all('series')).length, nAuthors = (await store.all('author')).length;
+  const hasToken = Boolean(await getSetting(store, 'hc_token', ''));
+  const { recs, sort } = await sortedRecs();
+  const recsNote = !hasToken ? '<p class="meta">Add your Hardcover token (More) to get suggestions.</p>'
     : !recs ? '<p class="meta" id="recs-status">Finding suggestions…</p>'
     : !recs.items.length ? `<p class="meta">No new suggestions right now.${recs.errors?.length ? ' Some lookups failed: ' + esc(recs.errors[0]) : ''}</p>` : '';
   if (hasToken && (nSeries || nAuthors) && recsStale(recs) && Date.now() - Date.parse(await getSetting(store, 'recs_attempt', '1970-01-01')) > 6 * 36e5) {
@@ -439,17 +452,36 @@ async function viewHome() {
       if (!location.hash || location.hash === '#/') await route();
     };
   }
+  if (!nSeries && !nAuthors) return `<div class="pagehead"><h1>Home</h1></div>
+    <section class="panel"><h2>Welcome</h2><p>Follow the series and authors you read and this page shows what is coming out.</p><p><a class="btn" href="#/search">Search</a> <a class="btn" href="#/more">Import your reading history</a></p></section>`;
+  const hero = soon[0], hw = hero && when(hero.date, today);
+  const later = soon.slice(hero ? 1 : 0);
   return `<div class="pagehead"><h1>Home</h1></div>
-    ${backupDue ? '<div class="flash"><span>It has been a while since your last backup.</span> <button class="small" data-click="export">Back up now</button></div>' : ''}
-    ${unseen ? `<a class="flash" href="#/updates"><span class="badge fill">${unseen}</span> new update${unseen > 1 ? 's' : ''} — see what's new</a>` : ''}
-    ${!nSeries && !nAuthors ? '<section class="panel"><h2>Welcome</h2><p>Follow the series and authors you read and this page shows what is coming out.</p><p><a class="btn" href="#/search">Search</a> <a class="btn" href="#/more">Import your reading history</a></p></section>' : ''}
-    ${out.length ? `<h2 class="label">Just out</h2><ul class="rows">${out.slice(0, 4).map((it) => upcomingRow(it, today)).join('')}</ul>` : ''}
-    ${soon.length ? `<h2 class="label">Coming up</h2><ul class="rows">${soon.slice(0, 5).map((it) => upcomingRow(it, today)).join('')}</ul>` : ''}
-    ${items.length ? '<p><a href="#/upcoming">See all upcoming →</a></p>' : ''}
-    ${nextUp.length ? `<h2 class="label">Next to read</h2><ul class="rows">${nextUp.slice(0, 5).map((it) => upcomingRow(it, today)).join('')}</ul>${nextUp.length > 5 ? `<p class="meta">${nextUp.length - 5} more series with a book waiting.</p>` : ''}` : ''}
-    ${nSeries || nAuthors ? `<h2 class="label">Recommended for you</h2>
-      ${recs?.items.length > 1 ? `<div class="seg" role="group" aria-label="Sort suggestions">${[['popular', 'Most similar'], ['rating', 'Top rated'], ['authors', 'My authors']].map(([k, v]) => `<button class="small" data-click="recs-sort" data-value="${k}" aria-pressed="${sort === k}">${v}</button>`).join('')}</div>` : ''}${recs?.items.length ? `<ul class="cards">${recs.items.slice(0, 8).map(recCard).join('')}</ul>` : ''}${recsNote}
-      ${hasToken && recs ? '<p><button class="small" data-click="recs-refresh">Refresh suggestions</button></p>' : ''}` : ''}`;
+    ${hero ? `<a class="hero-card" href="${hero.href}">${img(hero.ck, hero.fb, hero.title, hero.seed, 'cover big', hero.author)}
+      <div class="body"><span class="label">Next release</span><strong class="ht">${esc(hero.title)}</strong><span class="meta">${esc(hero.sub)}</span>
+        <span class="countdown ${hw.tone}">${esc(hw.text)}</span><span class="meta">${esc(fmtDate(hero.date, today))}</span></div></a>` : ''}
+    ${out.length ? `${secHead('Just out', out.length > 3 ? '#/upcoming' : '')}<ul class="rows">${out.slice(0, 3).map((it) => upcomingRow(it, today)).join('')}</ul>` : ''}
+    ${later.length ? `${secHead('Coming up', '#/upcoming')}<ul class="shelf">${later.slice(0, 12).map((it) => { const w = when(it.date, today);
+      return shelfItem({ ...it, line2: `<span class="chip ${w.tone}">${esc(w.text)}</span>` }); }).join('')}</ul>` : ''}
+    ${!items.length ? '<p class="meta">No dated releases yet. They show up here once Hardcover lists a date.</p>' : ''}
+    ${nextUp.length ? `${secHead('Continue reading', nextUp.length > 1 ? '#/continue' : '')}<ul class="shelf">${nextUp.slice(0, 12).map((it) =>
+      shelfItem({ ...it, title: it.name, line2: `#${pos(it.num)} · ${esc(it.sub)}` })).join('')}</ul>` : ''}
+    ${secHead('For you', recs?.items.length ? '#/recs' : '', recs?.items.length > 1 ? sortMenu(sort, hasToken) : '')}
+    ${recs?.items.length ? `<ul class="shelf">${recs.items.slice(0, 12).map((r) => shelfItem({ href: `#/rec/${r.hardcover_series_id}`, ck: null, fb: r.cover_url, title: r.name, seed: r.name, author: r.author,
+      line2: r.rating ? `★ ${r.rating.toFixed(1)} · ${esc(r.author ?? '')}` : esc(r.author ?? ''),
+      x: `<button class="shelf-x" data-click="rec-dismiss" data-hc="${r.hardcover_series_id}" aria-label="Not interested in ${esc(r.name)}">✕</button>` })).join('')}</ul>` : ''}${recsNote}`;
+}
+
+async function viewContinue() {
+  const today = todayIso(), list = await collectNext(today);
+  return `<p><a class="back" href="#/">← Home</a></p><div class="pagehead"><h1>Continue reading</h1><span class="meta">${list.length} series</span></div>
+    ${list.length ? `<ul class="rows">${list.map((it) => upcomingRow(it, today)).join('')}</ul>` : '<p>Nothing waiting: every released book in your started series is read.</p>'}`;
+}
+async function viewRecs() {
+  const hasToken = Boolean(await getSetting(store, 'hc_token', ''));
+  const { recs, sort } = await sortedRecs();
+  return `<p><a class="back" href="#/">← Home</a></p><div class="pagehead"><h1>For you</h1>${recs?.items.length ? sortMenu(sort, hasToken) : ''}</div>
+    ${recs?.items.length ? `<ul class="cards">${recs.items.map(recCard).join('')}</ul>` : '<p class="meta">No suggestions right now.</p>'}`;
 }
 
 async function viewUpdates() {
@@ -507,6 +539,8 @@ async function viewReview(params) {
 }
 
 async function viewMore() {
+  const backupDue = (await store.all('series')).length + (await store.all('author')).length > 0
+    && (Date.now() - Date.parse((await getSetting(store, 'last_backup', null)) ?? (await getSetting(store, 'first_seen', nowIso())))) > 30 * 864e5;
   const shopPref = await getSetting(store, 'store', 'hardcover');
   const hasToken = Boolean(await getSetting(store, 'hc_token', ''));
   const last = await getSetting(store, 'last_check', null);
@@ -540,6 +574,7 @@ async function viewMore() {
 
     <section class="panel"><h2>Backup</h2>
       <p class="meta">Your data lives only on this phone. Export a backup now and then (it does not include your token).</p>
+      ${backupDue ? '<p class="flash">It has been over a month since your last backup. <button class="small" data-click="export">Back up now</button></p>' : ''}
       <p class="meta">Last backup: ${esc((await getSetting(store, 'last_backup', null))?.slice(0, 10) ?? 'never')} · Storage: ${(await navigator.storage?.persisted?.()) ? 'protected from automatic clearing' : 'not guaranteed (the browser may clear it if space runs low)'}</p>
       <p><button data-click="export">Export backup</button></p>
       <form class="stack" data-form="restore"><label>Restore from backup<input type="file" name="file" accept=".json,application/json"></label><button>Restore</button></form></section>
@@ -547,7 +582,7 @@ async function viewMore() {
     <section class="panel"><h2>Hardcover fields</h2>
       <p class="meta">The app's Hardcover queries were written from the public docs. This compares them with the live schema.</p>
       <p><button data-click="verify">Verify Hardcover fields</button></p><pre class="out" id="verify-out"></pre>
-      <p class="meta">App version: similar-books suggestions (v10)</p></section>
+      <p class="meta">App version: new Home layout (v11)</p></section>
 
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}`;
@@ -558,10 +593,10 @@ async function route() {
   const [path, qs = ''] = location.hash.replace(/^#/, '').split('?');
   const params = new URLSearchParams(qs);
   const [, seg, arg] = path.split('/');
-  const tab = { '': 'home', upcoming: 'home', following: 'following', series: 'following', book: 'following', author: 'following', abook: 'following', rec: 'home', search: 'search', updates: 'updates' }[seg ?? ''] ?? 'more';
+  const tab = { '': 'home', upcoming: 'home', following: 'following', series: 'following', book: 'following', author: 'following', abook: 'following', rec: 'home', recs: 'home', continue: 'home', search: 'search', updates: 'updates' }[seg ?? ''] ?? 'more';
   let html;
   try {
-    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), abook: () => viewAuthorBook(arg, path.split('/')[3]), rec: () => viewRec(arg), upcoming: viewUpcoming, following: viewFollowing, search: () => viewSearch(params), updates: viewUpdates,
+    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), abook: () => viewAuthorBook(arg, path.split('/')[3]), rec: () => viewRec(arg), recs: viewRecs, continue: viewContinue, upcoming: viewUpcoming, following: viewFollowing, search: () => viewSearch(params), updates: viewUpdates,
       manual: viewManual, review: () => viewReview(params), more: viewMore }[seg ?? ''] ?? viewHome)();
   } catch (e) { html = `<p class="error">${esc(msg(e))}</p>`; }
   $app.innerHTML = html;

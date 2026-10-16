@@ -66,6 +66,8 @@ export async function buildRecs(store, client, { genres: maxGenres = MAX_GENRES 
     if (seen.has(it.hardcover_series_id)) continue;
     seen.add(it.hardcover_series_id); out.push(it);
   }
+  // Keep earlier suggestions this run didn't find again (after the new ones), so a refill or a failed lookup never empties the list.
+  for (const it of (await getSetting(store, 'recs', null))?.items ?? []) if (!seen.has(it.hardcover_series_id)) { seen.add(it.hardcover_series_id); out.push(it); }
   // If everything failed, back-date the cache so it is retried in ~6 h instead of sitting empty for a week.
   const at = !out.length && errors.length ? new Date(Date.now() - RECS_TTL_MS + 6 * 36e5).toISOString().slice(0, 19) + 'Z' : nowIso();
   const rec = { at, items: out.slice(0, MAX_ITEMS), errors };
