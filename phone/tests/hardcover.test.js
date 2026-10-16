@@ -83,3 +83,35 @@ test('bookDetails returns description and pages, tolerating gaps', async () => {
   const e = make(async () => json({ data: { books: [] } }));
   assert.deepEqual(await e.bookDetails(6), { description: null, pages: null });
 });
+
+test('search costs ONE request for series, books and authors', async () => {
+  let calls = 0, body;
+  const hits = (d) => ({ results: { hits: d.map((document) => ({ document })) } });
+  const c = make(async (u, init) => { calls++; body = JSON.parse(init.body).query;
+    return json({ data: { s: hits([{ id: '7', name: 'Saga' }]), b: hits([{ id: '5', title: 'Book' }]), a: hits([{ id: '9', name: 'Ann' }]) } }); });
+  const r = await c.search('ann');
+  assert.equal(calls, 1);
+  for (const t of ['Series', 'Book', 'Author']) assert.match(body, new RegExp(`query_type: "${t}"`));
+  assert.deepEqual([r.series[0].name, r.books[0].title, r.authors[0].name], ['Saga', 'Book', 'Ann']);
+  await c.search('ANN');                                          // cached
+  assert.equal(calls, 1);
+});
+
+test('a 429 pauses every later request (Retry-After honoured) instead of hammering', async () => {
+  let calls = 0;
+  const slept = [];
+  const c = new HardcoverClient({ getToken: () => 't', limiter: limiter(), sleep: async (ms) => { slept.push(ms); },
+    fetch: async () => { calls++; return calls === 1 ? new Response('{}', { status: 429, headers: { 'retry-after': '8' } }) : json({ data: { book_series: [] } }); } });
+  await assert.rejects(() => c.seriesBooks(1), /429.*8 seconds/);
+  assert.equal(calls, 1);
+  await c.seriesBooks(1);                                         // short wait: sleeps, then goes through
+  assert.equal(slept.length, 1);
+  assert.ok(slept[0] > 0 && slept[0] <= 8000);
+  assert.equal(calls, 2);
+  const c2 = new HardcoverClient({ getToken: () => 't', limiter: limiter(), sleep: async () => {},
+    fetch: async () => { calls++; return new Response('{}', { status: 429, headers: { 'retry-after': '90' } }); } });
+  await assert.rejects(() => c2.seriesBooks(1), /429/);
+  const before = calls;
+  await assert.rejects(() => c2.seriesBooks(1), /slow down; try again in \d+ seconds/);   // long wait: refuse without calling
+  assert.equal(calls, before);
+});

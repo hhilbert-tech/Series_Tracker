@@ -255,7 +255,8 @@ async function viewSearch(params) {
   const q = params.get('q') ?? '';
   afterRender = () => {
     const input = document.getElementById('q'); let t;
-    input.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => runSearch(input.value), 300); });   // debounce
+    // Wait for a pause in typing (and 3+ characters): Hardcover allows ~60 requests a minute. Enter/Search runs it at once.
+    input.addEventListener('input', () => { clearTimeout(t); if (input.value.trim().length < 3) return; t = setTimeout(() => runSearch(input.value), 1000); });
     if (q) runSearch(q);
   };
   return `<h1>Search</h1>

@@ -63,7 +63,8 @@ const seriesInfo = (s, position = null) => ({
 const bookSeriesList = (bs) => (bs ?? []).filter((x) => x.series).map((x) => seriesInfo(x.series, x.position));
 
 export class HardcoverClient {
-  constructor({ getToken, fetch: f = (...a) => globalThis.fetch(...a), limiter = new RateLimiter(60, 60000) }) {
+  constructor({ getToken, fetch: f = (...a) => globalThis.fetch(...a), limiter = new RateLimiter(50, 60000), sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+    this._sleep = sleep; this._blockedUntil = 0;
     this._getToken = getToken; this._fetch = f; this._limiter = limiter; this._cache = new Map();
   }
   toString() { return 'HardcoverClient()'; }
@@ -72,6 +73,11 @@ export class HardcoverClient {
     const token = ((await this._getToken()) ?? '').trim();
     if (!token) throw new HardcoverAuthError('No Hardcover API token. Add it in Settings.');
     const auth = /^bearer /i.test(token) ? token : `Bearer ${token}`;
+    const wait = this._blockedUntil - Date.now();                 // Hardcover told us to slow down: respect it for everyone
+    if (wait > 0) {
+      if (wait > 15000) throw new HardcoverError(`Hardcover asked us to slow down; try again in ${Math.ceil(wait / 1000)} seconds.`);
+      await this._sleep(wait);
+    }
     await this._limiter.acquire();
     let r;
     try {
@@ -81,7 +87,11 @@ export class HardcoverClient {
       throw new HardcoverError('Could not reach Hardcover (offline, or the browser blocked the request).');
     }
     if (r.status === 401 || r.status === 403) throw new HardcoverAuthError(`Hardcover rejected the API token (HTTP ${r.status}). Check the token in Settings; tokens expire.`);
-    if (r.status === 429) throw new HardcoverError('Hardcover rate limit hit (HTTP 429); try again later.');
+    if (r.status === 429) {
+      const secs = Math.min(120, Math.max(5, Number(r.headers?.get?.('retry-after')) || 30));
+      this._blockedUntil = Date.now() + secs * 1000;
+      throw new HardcoverError(`Hardcover rate limit hit (HTTP 429). Wait about ${secs} seconds, then try again.`);
+    }
     if (r.status >= 400) throw new HardcoverError(`Hardcover returned HTTP ${r.status}.`);
     let body;
     try { body = await r.json(); } catch { throw new HardcoverError('Hardcover returned a non-JSON response.'); }
@@ -140,26 +150,27 @@ export class HardcoverClient {
     });
   }
 
-  async searchBooks(q) {
-    return (await this._searchDocs(q, 'Book')).map((d) => {
+  _mapBooks(docs) {
+    return docs.map((d) => {
       const isbns = (d.isbns ?? []).filter((i) => String(i).length === 13);
       return { hardcover_book_id: Number(d.id), title: d.title ?? '', author: (d.author_names ?? [])[0] ?? null,
         cover_url: d.image?.url ?? null, release_date: dateOf(d.release_date), isbn13: isbns.length ? String(isbns[0]) : null };
     });
   }
-
-  async searchSeries(q) {
-    return (await this._searchDocs(q, 'Series')).map((d) => {
+  _mapSeries(docs) {
+    return docs.map((d) => {
       const names = d.author_names ?? (d.author_name ? [d.author_name] : []);
       return { hardcover_series_id: Number(d.id), name: d.name ?? '', author: names[0] ?? null, cover_url: d.image?.url ?? null,
         books_count: d.books_count ?? null, complete: Boolean(d.is_completed) };
     });
   }
-
-  async searchAuthors(q) {
-    return (await this._searchDocs(q, 'Author')).map((d) => ({ hardcover_author_id: Number(d.id), name: d.name ?? '',
+  _mapAuthors(docs) {
+    return docs.map((d) => ({ hardcover_author_id: Number(d.id), name: d.name ?? '',
       books_count: d.books_count ?? null, cover_url: d.image?.url ?? null })).filter((a) => a.hardcover_author_id && a.name);
   }
+  async searchBooks(q) { return this._mapBooks(await this._searchDocs(q, 'Book')); }
+  async searchSeries(q) { return this._mapSeries(await this._searchDocs(q, 'Series')); }
+  async searchAuthors(q) { return this._mapAuthors(await this._searchDocs(q, 'Author')); }
 
   // Every main (non-edition, non-compilation) book credited to the author, newest first.
   async authorBooks(authorId) {
@@ -175,6 +186,17 @@ export class HardcoverClient {
     return out;
   }
 
+  // Series, books and authors in ONE request (three aliased searches): searching used to cost three.
+  async _searchAll(q) {
+    q = (q ?? '').split(/\s+/).filter(Boolean).join(' ');
+    return this._cached(`all|${q.toLowerCase()}`, async () => {
+      const f = (alias, type) => `${alias}: search(query: $q, query_type: "${type}", per_page: 10, page: 1) { results }`;
+      const data = await this.gql(`query SearchAll($q: String!) { ${f('s', 'Series')} ${f('b', 'Book')} ${f('a', 'Author')} }`, { q });
+      const docs = (x) => { let res = x?.results ?? {}; if (typeof res === 'string') res = JSON.parse(res); return (res.hits ?? []).map((h) => h.document ?? h); };
+      return { series: docs(data.s), books: docs(data.b), authors: docs(data.a) };
+    });
+  }
+
   async search(q) {
     const digits = (q ?? '').replace(/[\s-]/g, '');
     if (/^(\d{9}[\dXx]|\d{13})$/.test(digits)) {
@@ -183,7 +205,9 @@ export class HardcoverClient {
       return { series: hit.series.map((s) => ({ ...s, cover_url: null, books_count: null })),
         books: [{ hardcover_book_id: hit.hardcover_book_id, title: hit.title, author: null, cover_url: null, release_date: null, isbn13: digits.length === 13 ? digits : null }], authors: [] };
     }
-    return { series: await this.searchSeries(q), books: await this.searchBooks(q), authors: await this.searchAuthors(q) };
+    if (!(q ?? '').trim()) return { series: [], books: [], authors: [] };
+    const all = await this._searchAll(q);
+    return { series: this._mapSeries(all.series), books: this._mapBooks(all.books), authors: this._mapAuthors(all.authors) };
   }
 
   async myLibrary() {
