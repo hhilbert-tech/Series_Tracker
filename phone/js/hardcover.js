@@ -18,6 +18,15 @@ query SeriesBooks($id: Int!) {
     order_by: [{position: asc}, {book: {users_count: desc}}]
   ) { position book { id title release_date image { url } } }
 }`;
+export const AUTHOR_BOOKS_Q = `
+query AuthorBooks($id: Int!) {
+  contributions(
+    where: {author_id: {_eq: $id},
+            book: {canonical_id: {_is_null: true}, is_partial_book: {_eq: false}, compilation: {_eq: false}}}
+    order_by: {book: {release_date: desc_nulls_first}}
+    limit: 300
+  ) { contribution book { id title release_date image { url } } }
+}`;
 const SERIES_FIELDS = 'id name is_completed author { name }';
 const isbnQ = (field) => `
 query ByIsbn($isbn: String!) {
@@ -41,6 +50,8 @@ export const EXPECTED_FIELDS = {
   series: ['id', 'name', 'is_completed', 'author', 'books_count'],
   book_series: ['position', 'series', 'book', 'book_id', 'series_id'],
   user_books: ['status_id', 'book'],
+  contributions: ['author_id', 'book', 'contribution'],
+  authors: ['id', 'name'],
 };
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
@@ -145,15 +156,34 @@ export class HardcoverClient {
     });
   }
 
+  async searchAuthors(q) {
+    return (await this._searchDocs(q, 'Author')).map((d) => ({ hardcover_author_id: Number(d.id), name: d.name ?? '',
+      books_count: d.books_count ?? null, cover_url: d.image?.url ?? null })).filter((a) => a.hardcover_author_id && a.name);
+  }
+
+  // Every main (non-edition, non-compilation) book credited to the author, newest first.
+  async authorBooks(authorId) {
+    const data = await this.gql(AUTHOR_BOOKS_Q, { id: Number(authorId) });
+    const seen = new Set(), out = [];
+    for (const row of data.contributions ?? []) {
+      const b = row.book ?? {}, c = row.contribution;
+      if (b.id === undefined || !b.title || seen.has(b.id)) continue;
+      if (c && String(c).toLowerCase() !== 'author') continue;           // skip illustrators, translators, etc.
+      seen.add(b.id);
+      out.push({ hardcover_book_id: Number(b.id), title: b.title, release_date: dateOf(b.release_date), cover_url: b.image?.url ?? null });
+    }
+    return out;
+  }
+
   async search(q) {
     const digits = (q ?? '').replace(/[\s-]/g, '');
     if (/^(\d{9}[\dXx]|\d{13})$/.test(digits)) {
       const hit = await this.findByIsbn(digits);
-      if (!hit) return { series: [], books: [] };
+      if (!hit) return { series: [], books: [], authors: [] };
       return { series: hit.series.map((s) => ({ ...s, cover_url: null, books_count: null })),
-        books: [{ hardcover_book_id: hit.hardcover_book_id, title: hit.title, author: null, cover_url: null, release_date: null, isbn13: digits.length === 13 ? digits : null }] };
+        books: [{ hardcover_book_id: hit.hardcover_book_id, title: hit.title, author: null, cover_url: null, release_date: null, isbn13: digits.length === 13 ? digits : null }], authors: [] };
     }
-    return { series: await this.searchSeries(q), books: await this.searchBooks(q) };
+    return { series: await this.searchSeries(q), books: await this.searchBooks(q), authors: await this.searchAuthors(q) };
   }
 
   async myLibrary() {

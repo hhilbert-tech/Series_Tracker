@@ -24,9 +24,11 @@ const CONSTRAINT = Symbol('constraint');
 
 export function openIdbStore(name = 'series-tracker') {
   return new Promise((resolve, reject) => {
-    const open = indexedDB.open(name, 1);
+    const open = indexedDB.open(name, 2);
     open.onupgradeneeded = () => {
-      for (const [table, keyPath] of Object.entries(KEYS)) open.result.createObjectStore(table, { keyPath });
+      for (const [table, keyPath] of Object.entries(KEYS)) {
+        if (!open.result.objectStoreNames.contains(table)) open.result.createObjectStore(table, { keyPath });
+      }
     };
     open.onsuccess = () => resolve(new IdbStore(open.result));
     open.onerror = () => reject(open.error);

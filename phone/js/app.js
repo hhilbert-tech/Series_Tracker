@@ -4,6 +4,7 @@ import { openIdbStore } from './store-idb.js';
 import { HardcoverClient, HardcoverError } from './hardcover.js';
 import { CoverCache, placeholderUri } from './covers.js';
 import { getSetting, setSetting, sbKey, maxRead, setProgress, removeSeries, lastReleased, nowIso } from './db.js';
+import { followAuthor, removeAuthor } from './authors.js';
 import { runCheck, updates, pendingEvents, markAllSeen } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
 import { KEYS } from './store-base.js';
@@ -90,12 +91,16 @@ async function viewHome() {
     const next = sbs.filter((r) => r.series_id === s.id && Number.isInteger(r.position) && r.position > read).sort((a, b) => a.position - b.position)[0];
     cards.push(seriesCard(s, read, next));
   }
+  const authors = (await store.all('author')).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   const muted = series.filter((s) => s.muted).length;
   const unseen = (await pendingEvents(store)).length;
   return `<h1>You're following ${series.length - muted} series${muted ? ` <small>(${muted} muted)</small>` : ''}</h1>
     ${unseen ? `<p class="flash"><a href="#/updates">${unseen} new update${unseen > 1 ? 's' : ''} — see what's new</a></p>` : ''}
     ${series.length ? `<ul class="cards">${cards.join('')}</ul>`
-      : `<p>Nothing followed yet.</p><p><a class="btn" href="#/more">Import your reading history</a> or <a href="#/search">search for a series</a>.</p>`}`;
+      : `<p>Nothing followed yet.</p><p><a class="btn" href="#/more">Import your reading history</a> or <a href="#/search">search for a series</a>.</p>`}
+    ${authors.length ? `<h2>Authors you follow</h2><ul class="cards">${authors.map((a) => `<li class="card ${a.muted ? 'is-muted' : ''}">
+      ${img(null, a.cover_url, a.name, a.name)}<div><h2><a href="#/author/${a.hardcover_author_id}">${esc(a.name)}</a>${a.muted ? ' <span class="badge">Muted</span>' : ''}</h2>
+      <p class="meta">New books by this author show up in Updates.</p></div></li>`).join('')}</ul>` : ''}`;
 }
 
 async function viewSeries(id) {
@@ -107,7 +112,7 @@ async function viewSeries(id) {
     <div class="card" style="margin-bottom:1rem">
       ${img(s.cover_key ?? `series-${s.id}`, s.cover_key ? '' : s.cover_url, s.name, s.name, 'cover big')}
       <div><h1>${esc(s.name)}${s.muted ? ' <span class="badge">Muted</span>' : ''}</h1>
-        <p class="meta">${esc(s.author ?? 'Unknown author')} · read up to #${pos(read)}${s.complete ? ' · complete' : ''}</p>
+        <p class="meta">${esc(s.author ?? 'Unknown author')}${s.author ? ` (<a href="#/search?q=${encodeURIComponent(s.author)}">follow author</a>)` : ''} · read up to #${pos(read)}${s.complete ? ' · complete' : ''}</p>
         <p class="meta">${s.last_checked_at ? 'Last checked ' + esc(s.last_checked_at) : 'Not checked yet'}</p>
         <button data-click="mute" data-id="${s.id}">${s.muted ? 'Unmute' : 'Mute'}</button>
         <button data-click="read-all" data-id="${s.id}">Mark all released as read</button>
@@ -151,12 +156,31 @@ async function viewBook(sid, position) {
     <div class="card" style="margin-bottom:1rem">
       ${img(b.cover_key ?? `sb-${sid}-${b.position}`, b.cover_key ? '' : b.cover_url, b.title, s.name, 'cover big')}
       <div><h1>${esc(b.title)}</h1>
-        <p class="meta">${esc(s.author ?? 'Unknown author')} · ${esc(s.name)} #${pos(b.position)}</p>
+        <p class="meta">${esc(s.author ?? 'Unknown author')}${s.author ? ` (<a href="#/search?q=${encodeURIComponent(s.author)}">follow author</a>)` : ''} · ${esc(s.name)} #${pos(b.position)}</p>
         <p>${status}</p><p class="meta">${isRead ? 'Read' : 'Unread'}</p>${btn}</div></div>
     <div id="book-more"><p class="meta">Loading details…</p></div>`;
 }
 
-function resultsHtml(r, followed) {
+async function viewAuthor(id) {
+  const a = await store.get('author', Number(id));
+  if (!a) return '<p>No such author. <a href="#/">Back</a></p>';
+  const today = nowIso().slice(0, 10);
+  const books = (await store.all('author_book')).filter((r) => r.author_id === a.hardcover_author_id)
+    .sort((x, y) => (y.release_date ?? '9999').localeCompare(x.release_date ?? '9999'));
+  const up = books.filter((b) => !b.release_date || b.release_date.slice(0, 10) > today), out = books.filter((b) => !up.includes(b));
+  const row = (b) => `<li>${img(null, b.cover_url, b.title, a.name, 'cover small')}<div><strong>${esc(b.title)}</strong><br>
+    <span class="meta">${esc(b.release_date ?? 'TBA')}</span></div></li>`;
+  return `<p><a href="#/">← Following</a></p>
+    <div class="card" style="margin-bottom:1rem">${img(null, a.cover_url, a.name, a.name, 'cover big')}
+      <div><h1>${esc(a.name)}${a.muted ? ' <span class="badge">Muted</span>' : ''}</h1>
+        <p class="meta">${a.last_checked_at ? 'Last checked ' + esc(a.last_checked_at) : 'Not checked yet'} · ${books.length} books</p>
+        <button data-click="mute-author" data-id="${a.hardcover_author_id}">${a.muted ? 'Unmute' : 'Mute'}</button>
+        <button data-click="remove-author" data-id="${a.hardcover_author_id}" data-name="${esc(a.name)}">Remove</button></div></div>
+    ${up.length ? `<h2>Upcoming / undated</h2><ul class="rows">${up.map(row).join('')}</ul>` : ''}
+    <h2>Released</h2>${out.length ? `<ul class="rows">${out.map(row).join('')}</ul>` : '<p>No books listed.</p>'}`;
+}
+
+function resultsHtml(r, followed, followedAuthors = new Set()) {
   if (r.error) return `<p class="error" role="alert">${esc(r.error)}</p>`;
   if (!r.q) return '';
   const sCards = r.series.map((s) => `<li class="card">${img(null, s.cover_url, s.name, s.name)}<div><h3>${esc(s.name)}</h3>
@@ -174,7 +198,13 @@ function resultsHtml(r, followed) {
         <input type="hidden" name="hardcover_book_id" value="${b.hardcover_book_id}"><input type="hidden" name="title" value="${esc(b.title)}">
         <input type="hidden" name="author" value="${esc(b.author ?? '')}"><input type="hidden" name="cover_url" value="${esc(b.cover_url ?? '')}">
         <input type="hidden" name="isbn13" value="${esc(b.isbn13 ?? '')}"><button>Add as read</button></form></div></li>`).join('');
-  return `<h2>Series</h2>${r.series.length ? `<ul class="cards">${sCards}</ul>` : '<p>No series found.</p>'}
+  const aCards = (r.authors ?? []).map((a) => `<li class="card">${img(null, a.cover_url, a.name, a.name)}<div><h3>${esc(a.name)}</h3>
+      <p class="meta">${a.books_count ? `${a.books_count} books` : 'Author'}</p>
+      ${followedAuthors.has(a.hardcover_author_id) ? `<p><a class="badge" href="#/author/${a.hardcover_author_id}">Following</a></p>` : `
+      <form class="inline" data-form="follow-author">
+        <input type="hidden" name="hardcover_author_id" value="${a.hardcover_author_id}"><input type="hidden" name="name" value="${esc(a.name)}">
+        <input type="hidden" name="cover_url" value="${esc(a.cover_url ?? '')}"><button class="primary">Follow author</button></form>`}</div></li>`).join('');
+  return `${aCards ? `<h2>Authors</h2><ul class="cards">${aCards}</ul>` : ''}<h2>Series</h2>${r.series.length ? `<ul class="cards">${sCards}</ul>` : '<p>No series found.</p>'}
     <h2>Books</h2>${r.books.length ? `<ul class="cards">${bCards}</ul>` : '<p>No books found.</p>'}
     <p>Can't find it? <a href="#/manual">Add it by hand</a>.</p>`;
 }
@@ -186,10 +216,11 @@ async function runSearch(q) {
   if (!q) { out.innerHTML = ''; return; }
   out.setAttribute('aria-busy', 'true');
   let r;
-  try { r = { q, ...(await client.search(q)), error: null }; } catch (e) { r = { q, series: [], books: [], error: msg(e) }; }
+  try { r = { q, ...(await client.search(q)), error: null }; } catch (e) { r = { q, series: [], books: [], authors: [], error: msg(e) }; }
   if (mine !== searchSeq) return;                          // a newer search superseded this one
   const followed = new Set((await store.all('series')).map((s) => s.hardcover_series_id));
-  out.innerHTML = resultsHtml(r, followed); out.removeAttribute('aria-busy');
+  const followedAuthors = new Set((await store.all('author')).map((a) => a.hardcover_author_id));
+  out.innerHTML = resultsHtml(r, followed, followedAuthors); out.removeAttribute('aria-busy');
   history.replaceState(null, '', '#/search?q=' + encodeURIComponent(q));
   hydrateCovers(out);
 }
@@ -214,9 +245,9 @@ async function viewUpdates() {
   return `<h1>Updates</h1>
     ${unseen ? '<p><button data-click="mark-seen">Mark all seen</button></p>' : ''}
     ${list.length ? `<ul class="cards">${list.map((n) => `<li class="card ${n.seen_at ? '' : 'unseen'}">
-        ${img(n.cover_key ?? `sb-${n.series_id}-${n.position}`, null, n.title ?? '', n.series_name)}
-        <div><h3><a href="#/series/${n.series_id}">${esc(n.series_name)}</a></h3>
-        <p><strong>#${pos(n.position)} ${esc(n.title)}</strong></p>
+        ${img(n.author_id != null ? null : (n.cover_key ?? `sb-${n.series_id}-${n.position}`), n.author_id != null ? n.cover_url : null, n.title ?? '', n.series_name)}
+        <div><h3><a href="#/${n.author_id != null ? 'author/' + n.author_id : 'series/' + n.series_id}">${esc(n.series_name)}</a>${n.author_id != null ? ' <span class="badge">Author</span>' : ''}</h3>
+        <p><strong>${n.position != null ? '#' + pos(n.position) + ' ' : ''}${esc(n.title)}</strong></p>
         <p class="meta">${LABEL[n.kind]} · ${n.kind === 'date_changed' ? `${esc(n.detail ?? 'TBA')} → ${esc(n.release_date ?? 'TBA')}` : esc(n.release_date ?? 'date TBA')}</p></div></li>`).join('')}</ul>`
       : '<p>Nothing yet. New announcements, date changes and releases for series you follow show up here after a check.</p>'}`;
 }
@@ -298,10 +329,10 @@ async function route() {
   const [path, qs = ''] = location.hash.replace(/^#/, '').split('?');
   const params = new URLSearchParams(qs);
   const [, seg, arg] = path.split('/');
-  const tab = { '': 'home', series: 'home', search: 'search', updates: 'updates', book: 'home' }[seg ?? ''] ?? 'more';
+  const tab = { '': 'home', series: 'home', search: 'search', updates: 'updates', book: 'home', author: 'home' }[seg ?? ''] ?? 'more';
   let html;
   try {
-    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), search: () => viewSearch(params), updates: viewUpdates,
+    html = await ({ '': viewHome, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), search: () => viewSearch(params), updates: viewUpdates,
       manual: viewManual, review: () => viewReview(params), more: viewMore }[seg ?? ''] ?? viewHome)();
   } catch (e) { html = `<p class="error">${esc(msg(e))}</p>`; }
   $app.innerHTML = html;
@@ -355,6 +386,11 @@ const clickActions = {
     if (el.dataset.home) location.hash = '#/';
     toast('Removed.'); await route();
   },
+  async 'mute-author'(el) { const a = await store.get('author', Number(el.dataset.id)); await store.put('author', { ...a, muted: a.muted ? 0 : 1 }); await route(); },
+  async 'remove-author'(el) {
+    if (!confirm(`Stop following ${el.dataset.name}? Their updates are deleted.`)) return;
+    await removeAuthor(store, Number(el.dataset.id)); toast('Removed.'); location.hash = '#/'; await route();
+  },
   async 'read-none'(el) { await setProgress(store, Number(el.dataset.id), 0); await route(); },
   async 'read-all'(el) {
     const sid = Number(el.dataset.id), p = await lastReleased(store, sid, nowIso().slice(0, 10));
@@ -393,6 +429,10 @@ const formActions = {
       author: fd.get('author') || null, cover_url: fd.get('cover_url') || null, complete: Boolean(fd.get('complete')) },
       Math.max(0, parseInt(fd.get('read_up_to'), 10) || 0), covers);
     location.hash = `#/series/${sid}`;
+  },
+  async 'follow-author'(fd) {
+    const aid = await followAuthor(store, client, { hardcover_author_id: Number(fd.get('hardcover_author_id')), name: fd.get('name'), cover_url: fd.get('cover_url') || null });
+    toast(`Following ${fd.get('name')}. New books by them will show in Updates.`); location.hash = `#/author/${aid}`;
   },
   async 'add-book'(fd) {
     const r = await addSearchBook(store, client, { hardcover_book_id: Number(fd.get('hardcover_book_id')), title: fd.get('title'),

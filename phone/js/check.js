@@ -4,6 +4,7 @@
 import { HardcoverAuthError, HardcoverError } from './hardcover.js';
 import { maxRead, nowIso, sbKey, todayIso } from './db.js';
 import { fetchSeriesCovers } from './covers.js';
+import { runAuthorCheck } from './authors.js';
 
 const isPast = (d, today) => /^\d{4}-\d{2}-\d{2}/.test(d ?? '') && d.slice(0, 10) <= today;
 
@@ -75,17 +76,24 @@ export async function runCheck(store, client, { today = todayIso(), covers = nul
     res.events.push(...await syncSeries(store, s.id, books, today, s.last_checked_at == null, covers));
     await store.put('series', { ...(await store.get('series', s.id)), last_checked_at: nowIso() });
   }
+  if (!res.errors.some((m) => /token/i.test(m))) {              // an auth failure above applies to authors too
+    const a = await runAuthorCheck(store, client, { today });
+    res.events.push(...a.events); res.errors.push(...a.errors);
+  }
   return res;
 }
 
-const byUpdate = (a, b) => (a.series_name.localeCompare(b.series_name) || (a.position ?? 0) - (b.position ?? 0));
+const byUpdate = (a, b) => (a.series_name.localeCompare(b.series_name) || (a.position ?? 0) - (b.position ?? 0) || (a.title ?? '').localeCompare(b.title ?? ''));
 export async function updates(store, { onlyUnseen = false } = {}) {
   const names = new Map((await store.all('series')).map((s) => [s.id, s]));
+  const authors = new Map((await store.all('author')).map((a) => [a.hardcover_author_id, a]));
   const sbs = new Map((await store.all('series_book')).map((r) => [r.key, r]));
   return (await store.all('notification_log'))
-    .filter((n) => !n.suppressed && (!onlyUnseen || !n.seen_at) && names.has(n.series_id))
-    .map((n) => ({ ...n, series_name: names.get(n.series_id).name, old_date: n.detail,
-      cover_key: sbs.get(sbKey(n.series_id, n.position))?.cover_key ?? null }));
+    .filter((n) => !n.suppressed && (!onlyUnseen || !n.seen_at) && (n.author_id != null ? authors.has(n.author_id) : names.has(n.series_id)))
+    .map((n) => (n.author_id != null
+      ? { ...n, series_name: authors.get(n.author_id).name, old_date: n.detail, cover_key: null }
+      : { ...n, series_name: names.get(n.series_id).name, old_date: n.detail,
+        cover_key: sbs.get(sbKey(n.series_id, n.position))?.cover_key ?? null }));
 }
 export async function pendingEvents(store) { return (await updates(store, { onlyUnseen: true })).sort(byUpdate); }
 export async function markAllSeen(store) {

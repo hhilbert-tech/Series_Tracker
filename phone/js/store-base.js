@@ -2,6 +2,7 @@
 export const KEYS = {
   series: 'id', book: 'id', series_book: 'key', settings: 'key',
   user_progress: 'series_id', notification_log: 'key', covers: 'key',
+  author: 'hardcover_author_id', author_book: 'key',
 };
 
 export class Store {

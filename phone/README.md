@@ -7,6 +7,7 @@ The Python version one folder up is untouched and still works if you ever want a
 ## What differs from the spec
 - **No nightly email.** There is no always-on machine. The app checks when you open it (at most every 12 hours,
   or tap *More → Check now*) and lists changes under **Updates** with a badge.
+- **Authors:** search an author and tap *Follow author* (or use the *follow author* link on a series or book page). Any new book by them lands in Updates; books of a series you already follow are left to the series check.
 - **Background alerts: best effort.** On Android Chrome, with the app installed, *More → Enable background alerts*
   asks the browser to check periodically and show a notification. The browser decides if and when it runs.
   iPhone can't do this.

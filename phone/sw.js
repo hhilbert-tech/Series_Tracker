@@ -1,9 +1,9 @@
 // Offline app shell (stale-while-revalidate) + best-effort periodic background check.
 import { runBackgroundCheck } from './js/background.js';
 
-const CACHE = 'series-tracker-shell-v1';
+const CACHE = 'series-tracker-shell-v2';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'css/style.css', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png',
-  'icons/apple-touch-icon.png', 'js/app.js', 'js/background.js', 'js/check.js', 'js/covers.js', 'js/db.js', 'js/hardcover.js',
+  'icons/apple-touch-icon.png', 'js/app.js', 'js/authors.js', 'js/background.js', 'js/check.js', 'js/covers.js', 'js/db.js', 'js/hardcover.js',
   'js/importer.js', 'js/parse.js', 'js/ratelimit.js', 'js/store-base.js', 'js/store-idb.js'];
 
 self.addEventListener('install', (e) => {
