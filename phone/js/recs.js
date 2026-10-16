@@ -22,17 +22,37 @@ export async function buildRecs(store, client, { genres: maxGenres = MAX_GENRES 
     for (const { name, w } of top) for (const s of bySeries.get(name) ?? []) items.push({ ...s, why: `More by ${name}`, kind: 'author', rank: 1000 + w * 10 });
   } catch (e) { if (e instanceof HardcoverAuthError) throw e; errors.push(`authors: ${e.message ?? e}`); }
 
-  // 2. Same genres, from the books you've read.
+  // The books you've read (id -> title), shared by the "similar" and genre lookups below.
+  const readBooks = new Map();
+  for (const s of series) {
+    const read = await maxRead(store, s.id);
+    for (const r of await store.all('series_book')) if (r.series_id === s.id && isRead(r, read) && r.hardcover_book_id) readBooks.set(r.hardcover_book_id, r.title);
+  }
+  const ids = [...readBooks.keys()];
+
+  // 2. "Similar books", like the Hardcover book page: books similar to many of the ones you've read score highest.
   try {
-    const ids = [];
-    for (const s of series) {
-      const read = await maxRead(store, s.id);
-      for (const r of await store.all('series_book')) if (r.series_id === s.id && isRead(r, read) && r.hardcover_book_id) ids.push(r.hardcover_book_id);
+    const seeds = ids.slice(-25), sim = await client.similarBookIds(seeds);
+    const score = new Map();
+    for (const [seed, list] of sim) list.forEach((id, i) => {
+      if (readBooks.has(id)) return;
+      const cur = score.get(id) ?? { w: 0, best: 0, seed };
+      const w = 1 - i / 60; cur.w += w; if (w > cur.best) { cur.best = w; cur.seed = seed; } score.set(id, cur);
+    });
+    const top = [...score.entries()].sort((x, y) => y[1].w - x[1].w).slice(0, 60);
+    if (top.length) for (const b of await client.booksInfo(top.map(([id]) => id))) {
+      const sc = score.get(b.hardcover_book_id);
+      if (!b.series || !sc) continue;                                   // standalone books can't be followed as a series
+      items.push({ ...b.series, cover_url: b.cover_url, users_count: b.users_count, rating: b.rating, kind: 'similar',
+        why: `Similar to ${readBooks.get(sc.seed) ?? 'books you read'}`, rank: 2e6 + Math.round(sc.w * 1000) });
     }
+  } catch (e) { if (e instanceof HardcoverAuthError) throw e; errors.push(`similar: ${e.message ?? e}`); }
+
+  // 3. Same genres/tags, from the books you've read.
+  try {
     const tally = new Map(), tagTally = new Map(), books = await client.bookTags(ids);
     const count = (m, g) => m.set(g.slug, { slug: g.slug, name: g.name ?? g.slug, n: (m.get(g.slug)?.n ?? 0) + g.count });
     for (const b of books) { for (const g of b.genres) count(tally, g); for (const g of b.tags ?? []) count(tagTally, g); }
-    // finer tags (e.g. dark fantasy) first: they rank above plain genre matches, so suggestions are narrower
     for (const g of [...tagTally.values()].sort((a, b) => b.n - a.n).slice(0, MAX_TAGS)) {
       for (const s of await client.popularInGenre(g.slug, 'Tag')) items.push({ ...s, why: `Popular in ${g.name}`, kind: 'genre', rank: 1e6 + (s.users_count ?? 0) });
     }

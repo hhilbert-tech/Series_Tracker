@@ -45,7 +45,7 @@ query MyLibrary {
 }`;
 export const SCHEMA_Q = 'query($n: String!) { __type(name: $n) { fields { name } } }';
 export const EXPECTED_FIELDS = {
-  books: ['id', 'title', 'release_date', 'image', 'canonical_id', 'is_partial_book', 'compilation', 'users_count', 'contributions', 'book_series', 'description', 'pages', 'rating', 'cached_tags'],
+  books: ['id', 'title', 'release_date', 'image', 'canonical_id', 'is_partial_book', 'compilation', 'users_count', 'contributions', 'book_series', 'description', 'pages', 'rating', 'cached_tags', 'cached_similar_book_ids'],
   editions: ['isbn_13', 'isbn_10', 'book'],
   series: ['id', 'name', 'is_completed', 'author', 'books_count'],
   book_series: ['position', 'series', 'book', 'book_id', 'series_id'],
@@ -201,6 +201,33 @@ export class HardcoverClient {
       const pick = (...keys) => keys.flatMap((k) => ct?.[k] ?? []).map((g) => ({ slug: g.tagSlug ?? g.tag_slug ?? g.slug ?? null, name: g.tag ?? g.name ?? null, count: Number(g.count) || 1 }))
         .filter((g) => g.slug);
       return { id: Number(b.id), genres: pick('Genre', 'genre'), tags: pick('Tag', 'tag'), categories: ct && typeof ct === 'object' ? Object.keys(ct) : [] };
+    });
+  }
+
+  // "Similar books" (what the Hardcover site shows on a book page): Map(bookId -> similar book ids, most similar first).
+  async similarBookIds(ids) {
+    ids = [...new Set(ids)].slice(0, 25).map(Number);
+    if (!ids.length) return new Map();
+    const data = await this.gql('query Similar($ids: [Int!]) { books(where: {id: {_in: $ids}}) { id cached_similar_book_ids } }', { ids });
+    const out = new Map();
+    for (const b of data.books ?? []) {
+      let v = b.cached_similar_book_ids; if (typeof v === 'string') { try { v = JSON.parse(v); } catch { v = []; } }
+      out.set(Number(b.id), (Array.isArray(v) ? v : []).map(Number).filter(Number.isFinite).slice(0, 40));
+    }
+    return out;
+  }
+
+  // Basic info plus the first series of some books, one request: [{hardcover_book_id, title, users_count, rating, cover_url, series|null}].
+  async booksInfo(ids) {
+    ids = [...new Set(ids)].slice(0, 60).map(Number);
+    if (!ids.length) return [];
+    const data = await this.gql(`query BooksInfo($ids: [Int!]) { books(where: {id: {_in: $ids}, canonical_id: {_is_null: true}}) {
+      id title users_count rating image { url } book_series(limit: 1) { series { ${SERIES_FIELDS} } } } }`, { ids });
+    return (data.books ?? []).map((b) => {
+      const s = b.book_series?.[0]?.series;
+      return { hardcover_book_id: Number(b.id), title: b.title ?? '', users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null,
+        cover_url: b.image?.url ?? null,
+        series: s?.id ? { hardcover_series_id: Number(s.id), name: s.name ?? '', author: s.author?.name ?? null, complete: Boolean(s.is_completed) } : null };
     });
   }
 

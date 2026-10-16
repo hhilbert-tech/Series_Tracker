@@ -448,7 +448,7 @@ async function viewHome() {
     ${items.length ? '<p><a href="#/upcoming">See all upcoming →</a></p>' : ''}
     ${nextUp.length ? `<h2 class="label">Next to read</h2><ul class="rows">${nextUp.slice(0, 5).map((it) => upcomingRow(it, today)).join('')}</ul>${nextUp.length > 5 ? `<p class="meta">${nextUp.length - 5} more series with a book waiting.</p>` : ''}` : ''}
     ${nSeries || nAuthors ? `<h2 class="label">Recommended for you</h2>
-      ${recs?.items.length > 1 ? `<div class="seg" role="group" aria-label="Sort suggestions">${[['popular', 'Popular'], ['rating', 'Top rated'], ['authors', 'My authors']].map(([k, v]) => `<button class="small" data-click="recs-sort" data-value="${k}" aria-pressed="${sort === k}">${v}</button>`).join('')}</div>` : ''}${recs?.items.length ? `<ul class="cards">${recs.items.slice(0, 8).map(recCard).join('')}</ul>` : ''}${recsNote}
+      ${recs?.items.length > 1 ? `<div class="seg" role="group" aria-label="Sort suggestions">${[['popular', 'Most similar'], ['rating', 'Top rated'], ['authors', 'My authors']].map(([k, v]) => `<button class="small" data-click="recs-sort" data-value="${k}" aria-pressed="${sort === k}">${v}</button>`).join('')}</div>` : ''}${recs?.items.length ? `<ul class="cards">${recs.items.slice(0, 8).map(recCard).join('')}</ul>` : ''}${recsNote}
       ${hasToken && recs ? '<p><button class="small" data-click="recs-refresh">Refresh suggestions</button></p>' : ''}` : ''}`;
 }
 
@@ -547,7 +547,7 @@ async function viewMore() {
     <section class="panel"><h2>Hardcover fields</h2>
       <p class="meta">The app's Hardcover queries were written from the public docs. This compares them with the live schema.</p>
       <p><button data-click="verify">Verify Hardcover fields</button></p><pre class="out" id="verify-out"></pre>
-      <p class="meta">App version: subgenre suggestions (v9)</p></section>
+      <p class="meta">App version: similar-books suggestions (v10)</p></section>
 
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}`;

@@ -98,3 +98,18 @@ test('subgenre tags rank above plain genre matches and use the Tag category', as
   assert.equal(rec.items[0].why, 'Popular in Dark Fantasy');
   assert.ok(client.calls.some((c) => c[0] === 'popularInGenre' && c[1] === 'dark-fantasy' && c[2] === 'Tag'));
 });
+
+test('similar books: ranked by how many of your read books they are similar to, series only, read books excluded', async () => {
+  const store = new MemStore(), client = new FakeClient();
+  const sid = await upsertSeries(store, 1, 'Read Saga', 'Ann Author');
+  for (const [p, id] of [[1, 11], [2, 12]]) await store.put('series_book', { key: `${sid}:${p}`, series_id: sid, position: p, hardcover_book_id: id, title: `Book ${p}`, release_date: '2010-01-01' });
+  await bumpProgress(store, sid, 2);
+  client.similar[11] = [12, 21, 22, 23]; client.similar[12] = [22, 21];
+  const ser = (n) => ({ series: { hardcover_series_id: n, name: `S${n}`, author: 'X', complete: false }, title: `T${n}`, users_count: 1, rating: 4, cover_url: null });
+  client.info[21] = ser(21); client.info[22] = ser(22); client.info[23] = { ...ser(23), series: null };    // 23 is a standalone
+  const rec = await buildRecs(store, client);
+  const sims = rec.items.filter((i) => i.kind === 'similar');
+  assert.deepEqual(sims.map((i) => i.name), ['S22', 'S21']);                                    // 22 is similar to both read books
+  assert.equal(sims[0].why, 'Similar to Book 2');
+  assert.ok(!rec.items.some((i) => i.hardcover_series_id === 23));
+});
