@@ -45,7 +45,7 @@ query MyLibrary {
 }`;
 export const SCHEMA_Q = 'query($n: String!) { __type(name: $n) { fields { name } } }';
 export const EXPECTED_FIELDS = {
-  books: ['id', 'title', 'release_date', 'image', 'canonical_id', 'is_partial_book', 'compilation', 'users_count', 'contributions', 'book_series', 'description', 'pages'],
+  books: ['id', 'title', 'release_date', 'image', 'canonical_id', 'is_partial_book', 'compilation', 'users_count', 'contributions', 'book_series', 'description', 'pages', 'cached_tags'],
   editions: ['isbn_13', 'isbn_10', 'book'],
   series: ['id', 'name', 'is_completed', 'author', 'books_count'],
   book_series: ['position', 'series', 'book', 'book_id', 'series_id'],
@@ -171,6 +171,54 @@ export class HardcoverClient {
   async searchBooks(q) { return this._mapBooks(await this._searchDocs(q, 'Book')); }
   async searchSeries(q) { return this._mapSeries(await this._searchDocs(q, 'Series')); }
   async searchAuthors(q) { return this._mapAuthors(await this._searchDocs(q, 'Author')); }
+
+  // --- recommendations (field names unverified, like the rest; callers treat failures as "no suggestions") ---
+  // Series by each named author, in ONE request (aliased searches). Returns Map(name -> series[]).
+  async authorSeries(names) {
+    names = [...new Set(names)].slice(0, 8);
+    if (!names.length) return new Map();
+    const vars = Object.fromEntries(names.map((n, i) => [`q${i}`, n]));
+    const decl = names.map((_, i) => `$q${i}: String!`).join(', ');
+    const body = names.map((_, i) => `a${i}: search(query: $q${i}, query_type: "Series", per_page: 6, page: 1) { results }`).join(' ');
+    const data = await this.gql(`query AuthorSeries(${decl}) { ${body} }`, vars);
+    const out = new Map();
+    names.forEach((n, i) => {
+      let res = data[`a${i}`]?.results ?? {}; if (typeof res === 'string') res = JSON.parse(res);
+      const docs = (res.hits ?? []).map((h) => h.document ?? h)
+        .filter((d) => (d.author_names ?? (d.author_name ? [d.author_name] : [])).some((x) => String(x).toLowerCase() === n.toLowerCase()));
+      out.set(n, this._mapSeries(docs));
+    });
+    return out;
+  }
+
+  // Genre tags of some books: [{id, genres: [{slug, name, count}]}].
+  async bookTags(ids) {
+    ids = [...new Set(ids)].slice(0, 40).map(Number);
+    if (!ids.length) return [];
+    const data = await this.gql('query BookTags($ids: [Int!]) { books(where: {id: {_in: $ids}}) { id cached_tags } }', { ids });
+    return (data.books ?? []).map((b) => {
+      let ct = b.cached_tags; if (typeof ct === 'string') { try { ct = JSON.parse(ct); } catch { ct = null; } }
+      const genres = (ct?.Genre ?? ct?.genre ?? []).map((g) => ({ slug: g.tagSlug ?? g.tag_slug ?? g.slug ?? null, name: g.tag ?? g.name ?? null, count: Number(g.count) || 1 }))
+        .filter((g) => g.slug);
+      return { id: Number(b.id), genres };
+    });
+  }
+
+  // Popular series (via their first book) in a genre.
+  async popularInGenre(slug) {
+    const data = await this.gql(`query PopularInGenre($tag: jsonb!) { books(
+      where: {cached_tags: {_contains: $tag}, canonical_id: {_is_null: true}, book_series: {position: {_eq: 1}}}
+      order_by: {users_count: desc}, limit: 20
+    ) { id users_count image { url } book_series(where: {position: {_eq: 1}}, limit: 1) { series { ${SERIES_FIELDS} } } } }`, { tag: { Genre: [{ tagSlug: slug }] } });
+    const out = [];
+    for (const b of data.books ?? []) {
+      const s = b.book_series?.[0]?.series;
+      if (!s?.id) continue;
+      out.push({ hardcover_series_id: Number(s.id), name: s.name ?? '', author: s.author?.name ?? null, cover_url: b.image?.url ?? null,
+        complete: Boolean(s.is_completed), users_count: Number(b.users_count) || 0 });
+    }
+    return out;
+  }
 
   // Every main (non-edition, non-compilation) book credited to the author, newest first.
   async authorBooks(authorId) {
