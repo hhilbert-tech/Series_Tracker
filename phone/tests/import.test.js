@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MemStore } from '../js/store-mem.js';
-import { maxRead } from '../js/db.js';
+import { maxRead, isRead } from '../js/db.js';
 import { importGoodreads, importHardcover, addManualBook, addSearchBook, followSeries } from '../js/importer.js';
 import { FakeClient, book, seriesHit, PAST, FUTURE } from './helpers.js';
 
@@ -106,14 +106,25 @@ test('follow creates a tracked series with the chosen read-up-to, and never lowe
   assert.equal((await store.all('series')).length, 1); assert.equal(await maxRead(store, sid), 2);
 });
 
-test('adding a single book with a series bumps progress', async () => {
+test("I've read it: stores the book, follows nothing, and is picked up when its series is followed later", async () => {
   const store = new MemStore(), client = new FakeClient();
-  client.bookSeriesMap[55] = [{ hardcover_series_id: 7, name: 'Harbor Lights Saga', author: 'Ann', position: 2, complete: false }];
-  client.series[7] = [book(1, null, PAST), book(2, null, PAST)];
-  await addSearchBook(store, client, { hardcover_book_id: 55, title: 'Harbor Lights', author: 'Ann' });
+  client.series[7] = [book(1, null, PAST, 54), book(2, null, PAST, 55)];
+  const r = await addSearchBook(store, { hardcover_book_id: 55, title: 'Harbor Lights', author: 'Ann' });
   const b = await only(store, 'book');
-  assert.equal(b.source, 'search'); assert.equal(b.read, 1);
-  assert.equal(await maxRead(store, (await only(store, 'series')).id), 2);
+  assert.equal(b.source, 'search'); assert.equal(b.read, 1); assert.equal(r.series, null);
+  assert.equal((await store.all('series')).length, 0);
+  const sid = await followSeries(store, client, { hardcover_series_id: 7, name: 'Harbor Lights Saga' });
+  assert.equal(await maxRead(store, sid), 2);
+});
+
+test("I've read it: a book in a series you already follow is ticked off there", async () => {
+  const store = new MemStore(), client = new FakeClient();
+  client.series[7] = [book(1, null, PAST, 54), book(2, null, PAST, 55), book(3, null, PAST, 56)];
+  const sid = await followSeries(store, client, { hardcover_series_id: 7, name: 'Harbor Lights Saga' });
+  const r = await addSearchBook(store, { hardcover_book_id: 55, title: 'Two', author: 'Ann' });
+  assert.equal(r.series, 'Harbor Lights Saga');
+  const rows = (await store.all('series_book')).filter((x) => x.series_id === sid).sort((a, c) => a.position - c.position);
+  assert.deepEqual(rows.map((x) => isRead(x, 0)), [false, true, false]);                       // just that book, not "up to"
 });
 
 // Acceptance test 9

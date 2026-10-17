@@ -19,7 +19,7 @@ export function seriesHit(id, name, author = 'A. Writer', extra = {}) {
 export class FakeClient {
   constructor() {
     this.series = {}; this.isbns = {}; this.seriesByName = []; this.booksHits = [];
-    this.bookSeriesMap = {}; this.authors = {}; this.authorSeriesMap = {}; this.tags = {}; this.subtags = {}; this.similar = {}; this.info = {}; this.genreSeries = {}; this.firsts = {}; this.library = []; this.calls = []; this.fail = null;
+    this.authors = {}; this.authorSeriesMap = {}; this.tags = {}; this.subtags = {}; this.similar = {}; this.info = {}; this.genreSeries = {}; this.firsts = {}; this.library = []; this.calls = []; this.fail = null;
   }
   _hit(name, ...args) { this.calls.push([name, ...args]); if (this.fail) throw this.fail; }
   async seriesBooks(id) { this._hit('seriesBooks', id); return (this.series[id] ?? []).map((b) => ({ ...b })); }
@@ -34,6 +34,5 @@ export class FakeClient {
   async searchSeries(q) { this._hit('searchSeries', q); return [...this.seriesByName]; }
   async searchBooks(q) { this._hit('searchBooks', q); return [...this.booksHits]; }
   async search(q) { this._hit('search', q); return { series: [...this.seriesByName], books: [...this.booksHits] }; }
-  async bookSeries(id) { this._hit('bookSeries', id); return this.bookSeriesMap[id] ?? []; }
   async myLibrary() { this._hit('myLibrary'); return [...this.library]; }
 }

@@ -1,6 +1,6 @@
 // Import (Goodreads CSV / Hardcover library), series matching, and the shared "follow a series" step.
 import { HardcoverAuthError, HardcoverError } from './hardcover.js';
-import { bumpProgress, nowIso, todayIso, upsertSeries, removedSeriesIds, lastReleased } from './db.js';
+import { bumpProgress, nowIso, todayIso, upsertSeries, removedSeriesIds, lastReleased, isRead, maxRead, toggleRead } from './db.js';
 import { syncSeries } from './check.js';
 import { readBooks } from './recs.js';
 import { parseGoodreadsCsv, cleanIsbn } from './parse.js';
@@ -181,20 +181,19 @@ export async function addManualBook(store, client, f, covers = null) {
   return matchAndLinkBook(store, client, b.id, covers);
 }
 
-// "Add as read" from search: stores the book and follows its series (if any) up to its position.
-export async function addSearchBook(store, client, f, covers = null) {
+// "I've read it" (search results, picks): stores the book as read and follows nothing. If it's in a series you
+// already follow, it's ticked off there; following its series later picks it up from your history.
+export async function addSearchBook(store, f, covers = null) {
   const dup = (await store.all('book')).find((x) => x.source === 'search' && x.hardcover_book_id === f.hardcover_book_id);
   if (dup) return { duplicate: true, series: null };
   const coverKey = f.cover_url && covers ? await covers.getOrFetch(`book-${f.hardcover_book_id}`, [f.cover_url]) : null;
   const b = await newBook(store, { title: f.title, author: f.author || null, isbn13: cleanIsbn(f.isbn13), source: 'search',
     hardcover_book_id: f.hardcover_book_id, cover_key: coverKey });
-  let list = [];
-  try { list = await client.bookSeries(f.hardcover_book_id); } catch (e) { if (!(e instanceof HardcoverError)) throw e; }
-  for (const [i, s] of list.entries()) {
-    const sid = await followSeries(store, client, s, s.position, covers);
-    if (i === 0) await linkBook(store, b.id, sid, s.position);
-  }
-  return { duplicate: false, series: list[0]?.name ?? null };
+  const row = (await store.all('series_book')).find((r) => r.hardcover_book_id === Number(f.hardcover_book_id));
+  if (!row) return { duplicate: false, series: null };
+  if (!isRead(row, await maxRead(store, row.series_id))) await toggleRead(store, row.series_id, row.position);
+  await linkBook(store, b.id, row.series_id, row.position);
+  return { duplicate: false, series: (await store.get('series', row.series_id))?.name ?? null };
 }
 
 // ---- Needs review -------------------------------------------------------------------

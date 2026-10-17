@@ -34,7 +34,6 @@ query ByIsbn($isbn: String!) {
     book { id title book_series { position series { ${SERIES_FIELDS} } } }
   }
 }`;
-const BOOK_SERIES_Q = `query BookSeries($id: Int!) { book_series(where: {book_id: {_eq: $id}}) { position series { ${SERIES_FIELDS} } } }`;
 const SEARCH_Q = `query Search($q: String!, $type: String!, $page: Int!) { search(query: $q, query_type: $type, per_page: 10, page: $page) { results } }`;
 const LIBRARY_Q = `
 query MyLibrary {
@@ -144,10 +143,6 @@ export class HardcoverClient {
     const b = data.editions?.[0]?.book;
     if (!b) return null;
     return { hardcover_book_id: Number(b.id), title: b.title ?? '', series: bookSeriesList(b.book_series) };
-  }
-
-  async bookSeries(bookId) {
-    return bookSeriesList((await this.gql(BOOK_SERIES_Q, { id: Number(bookId) })).book_series);
   }
 
   async _searchDocs(q, type) {

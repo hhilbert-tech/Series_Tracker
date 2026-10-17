@@ -828,7 +828,7 @@ async function viewMore(sub) {
       ${(k === 'data' && backupDue) || (k === 'account' && !hasToken) ? '<span class="dot" aria-label="needs attention"></span>' : ''}<span class="chev" aria-hidden="true">›</span></a></li>`).join('')}</ul>
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}
-    <p class="meta center">Book Finder · v20</p>`;
+    <p class="meta center">Book Finder · v21</p>`;
   const head = `<p><a class="back" href="#/more">← More</a></p><div class="pagehead"><h1>${page[1]}</h1></div>`;
   if (sub === 'appearance') {
     const shopPref = await getSetting(store, 'store', 'hardcover');
@@ -1096,12 +1096,12 @@ const clickActions = {
   async 'pick-read'(el) {
     const it = currentPick;
     if (!it) return;
-    const r = await addSearchBook(store, client, { hardcover_book_id: it.hardcover_book_id, title: it.title, author: it.author ?? '', cover_url: it.cover_url ?? '', isbn13: '' }, covers);
+    const r = await addSearchBook(store, { hardcover_book_id: it.hardcover_book_id, title: it.title, author: it.author ?? '', cover_url: it.cover_url ?? '', isbn13: '' }, covers);
     if (el.dataset.love && !(await getFavourites(store)).some((f) => f.id === it.hardcover_book_id)) await toggleFavourite(store, it.hardcover_book_id, it.title);
     await unwatchBook(store, it.hardcover_book_id);
     const gone = await removeWant(store, it.key);
     if (gone?.hc_user_book_id && await getSetting(store, 'hc_token', '')) { try { await client.removeUserBook(gone.hc_user_book_id); } catch { /* Hardcover keeps it; harmless */ } }
-    toast(`${r.duplicate ? 'Already in your history' : `Added “${it.title}”`}${r.series ? `, following ${r.series}` : ''}.${el.dataset.love ? ' ♥ It now steers your picks.' : ''}`, { ms: 4000 });
+    toast(`${r.duplicate ? 'Already in your history' : `Added “${it.title}”`}${r.series ? `, ticked off in ${r.series}` : ''}.${el.dataset.love ? ' ♥ It now steers your picks.' : ''}`, { ms: 4000 });
     location.hash = '#/';
   },
   async 'pick-follow-author'(el) {
@@ -1209,11 +1209,12 @@ const formActions = {
     const aid = await followAuthor(store, client, { hardcover_author_id: Number(fd.get('hardcover_author_id')), name: fd.get('name'), cover_url: fd.get('cover_url') || null });
     toast(`Following ${fd.get('name')}. Their books show in Discover; new ones under More → Following & releases.`); location.hash = `#/author/${aid}`;
   },
-  async 'add-book'(fd) {
-    const r = await addSearchBook(store, client, { hardcover_book_id: Number(fd.get('hardcover_book_id')), title: fd.get('title'),
+  async 'add-book'(fd, form) {
+    const r = await addSearchBook(store, { hardcover_book_id: Number(fd.get('hardcover_book_id')), title: fd.get('title'),
       author: fd.get('author'), cover_url: fd.get('cover_url'), isbn13: fd.get('isbn13') }, covers);
-    toast(r.duplicate ? `“${fd.get('title')}” is already in your history.` : `Added “${fd.get('title')}”${r.series ? ` and following ${r.series}` : ''}.`);
-    location.hash = '#/';
+    toast(r.duplicate ? `“${fd.get('title')}” is already in your history.` : `Added “${fd.get('title')}” to your reading history${r.series ? `, ticked off in ${r.series}` : ''}.`);
+    if (location.hash.startsWith('#/search') && form?.isConnected) form.outerHTML = '<span class="chip read">✓ Read</span>';   // stay on the results
+    else location.hash = '#/';
   },
   async manual(fd) {
     const title = (fd.get('title') ?? '').trim();

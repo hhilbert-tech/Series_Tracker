@@ -2,7 +2,7 @@
 
 **Repo:** `hhilbert-tech/Series_Tracker`, branch `main`. App lives in `phone/`; every push touching it runs `npm test` and deploys to GitHub Pages (`.github/workflows/pages.yml`). Python version was retired (in git history ≤ `f796a60`).
 
-**Stack:** vanilla ES modules, no build. IndexedDB store (`store-idb.js`, `MemStore` twin for tests), hash router in `js/app.js`, service worker `sw.js` (stale-while-revalidate; bump `CACHE` name and add any new js file to `SHELL` on every release). Visible version string lives in `viewMore()` (currently "v20"). Tests: `cd phone && npm test` (node:test, 100 passing).
+**Stack:** vanilla ES modules, no build. IndexedDB store (`store-idb.js`, `MemStore` twin for tests), hash router in `js/app.js`, service worker `sw.js` (stale-while-revalidate; bump `CACHE` name and add any new js file to `SHELL` on every release). Visible version string lives in `viewMore()` (currently "v21"). Tests: `cd phone && npm test` (node:test, 101 passing).
 
 **Key files:** `app.js` (all views + actions), `hardcover.js` (all GraphQL), `check.js` (release detection), `db.js` (progress model), `authors.js`, `recs.js` (suggestions), `format.js` (dates, store links), `ics.js` (calendar export), `covers.js`.
 
