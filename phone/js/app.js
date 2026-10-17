@@ -283,6 +283,14 @@ const followMenu = (d, label = 'Follow series') => { const attrs = `data-hc="${d
 const bellBtn = (b, on) => `<button class="small" data-click="${on ? 'unwatch' : 'watch'}" data-id="${b.hardcover_book_id}" data-title="${esc(b.title)}" data-author="${esc(b.author ?? '')}"
   data-cover="${esc(b.cover_url ?? '')}" data-date="${esc(b.release_date ?? '')}" aria-pressed="${on}">${on ? '🔔 Notifying' : '🔔 Notify me'}</button>`;
 
+// ＋ Want to read for a book shown outside a pick (search results); `key` set = already saved.
+const wantBtn = (b, key) => (key ? `<button class="small" data-click="want-remove" data-key="${esc(key)}" data-id="${b.hardcover_book_id}" aria-pressed="true">✓ Want to read</button>`
+  : `<button class="small" data-click="want-add" data-id="${b.hardcover_book_id}" data-title="${esc(b.title)}" data-author="${esc(b.author ?? '')}" data-cover="${esc(b.cover_url ?? '')}" data-date="${esc(b.release_date ?? '')}" aria-pressed="false">＋ Want to read</button>`);
+// On the search page, swap the tapped button in place (re-rendering would rerun the search and lose your scroll position).
+async function refreshAfter(el, html) {
+  if (location.hash.startsWith('#/search') && el?.isConnected) el.outerHTML = html; else await route();
+}
+
 // A book's release date: as known, else one Hardcover lookup (null when unknown or offline).
 async function releaseDate(b) {
   if (b.release_date !== undefined && b.release_date !== null) return b.release_date;
@@ -419,7 +427,7 @@ async function viewAuthor(id) {
     ${stand.length ? `<div class="grouphead"><h2 class="label">Standalone &amp; other</h2></div><ul class="rows">${stand.map((b) => row(b, false)).join('')}</ul>` : ''}`;
 }
 
-function resultsHtml(r, followed, followedAuthors = new Set(), watched = new Set()) {
+function resultsHtml(r, followed, followedAuthors = new Set(), watched = new Set(), wanted = new Map()) {
   if (r.error) return `<p class="error" role="alert">${esc(r.error)}</p>`;
   if (!r.q) return '';
   const sCards = r.series.map((s) => `<li class="card">${img(null, s.cover_url, s.name, s.name)}<div><h3>${esc(s.name)}</h3>
@@ -427,11 +435,12 @@ function resultsHtml(r, followed, followedAuthors = new Set(), watched = new Set
       ${followed.has(s.hardcover_series_id) ? '<p><span class="badge">Following</span></p>' : followMenu({ hc: s.hardcover_series_id, name: s.name, author: s.author, cover: s.cover_url, complete: s.complete }, 'Follow')}</div></li>`).join('');
   const bCards = r.books.map((b) => `<li class="card">${img(null, b.cover_url, b.title, b.title)}<div><h3>${esc(b.title)}</h3>
       <p class="meta">${esc(b.author ?? 'Unknown author')}${b.release_date ? ' · ' + esc(fmtDate(b.release_date)) : ''}</p>
-      <form class="inline" data-form="add-book">
+      <div class="row-actions"><form class="inline" data-form="add-book">
         <input type="hidden" name="hardcover_book_id" value="${b.hardcover_book_id}"><input type="hidden" name="title" value="${esc(b.title)}">
         <input type="hidden" name="author" value="${esc(b.author ?? '')}"><input type="hidden" name="cover_url" value="${esc(b.cover_url ?? '')}">
-        <input type="hidden" name="isbn13" value="${esc(b.isbn13 ?? '')}"><button>Add as read</button></form>
-      ${isOut(b.release_date) ? '' : bellBtn(b, watched.has(b.hardcover_book_id))}</div></li>`).join('');
+        <input type="hidden" name="isbn13" value="${esc(b.isbn13 ?? '')}"><button class="small">I've read it</button></form>
+      ${wantBtn(b, wanted.get(b.hardcover_book_id))}
+      ${isOut(b.release_date) ? '' : bellBtn(b, watched.has(b.hardcover_book_id))}</div></div></li>`).join('');
   const aCards = (r.authors ?? []).map((a) => `<li class="card">${img(null, a.cover_url, a.name, a.name)}<div><h3>${esc(a.name)}</h3>
       <p class="meta">${a.books_count ? `${a.books_count} books` : 'Author'}</p>
       ${followedAuthors.has(a.hardcover_author_id) ? `<p><a class="badge" href="#/author/${a.hardcover_author_id}">Following</a></p>` : `
@@ -459,7 +468,8 @@ async function runSearch(q) {
   const followed = new Set((await store.all('series')).map((s) => s.hardcover_series_id));
   const followedAuthors = new Set((await store.all('author')).map((a) => a.hardcover_author_id));
   const watched = new Set((await watchList(store)).map((w) => w.hardcover_book_id));
-  out.innerHTML = resultsHtml(r, followed, followedAuthors, watched); out.removeAttribute('aria-busy');
+  const wanted = new Map((await wantList(store)).map((w) => [w.hardcover_book_id, w.key]));
+  out.innerHTML = resultsHtml(r, followed, followedAuthors, watched, wanted); out.removeAttribute('aria-busy');
   history.replaceState(null, '', '#/search?q=' + encodeURIComponent(q));
   hydrateCovers(out);
 }
@@ -814,7 +824,7 @@ async function viewMore(sub) {
       ${(k === 'data' && backupDue) || (k === 'account' && !hasToken) ? '<span class="dot" aria-label="needs attention"></span>' : ''}<span class="chev" aria-hidden="true">›</span></a></li>`).join('')}</ul>
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}
-    <p class="meta center">Book Finder · v18</p>`;
+    <p class="meta center">Book Finder · v19</p>`;
   const head = `<p><a class="back" href="#/more">← More</a></p><div class="pagehead"><h1>${page[1]}</h1></div>`;
   if (sub === 'appearance') {
     const shopPref = await getSetting(store, 'store', 'hardcover');
@@ -1028,8 +1038,18 @@ const clickActions = {
     toast(`${el.dataset.name} won't be suggested again (undo under All picks).`); location.hash = '#/';
   },
   async 'unhide-author'(el) { await unhideAuthor(store, el.dataset.name); await route(); },
-  async 'want-add'() {
-    const it = currentPick;
+  async 'want-add'(el) {
+    let it = currentPick;
+    if (el?.dataset.id) {                          // from search: fill in series, rating etc. with one lookup so it behaves like a pick
+      const d = el.dataset;
+      it = { hardcover_book_id: Number(d.id), title: d.title, author: d.author || null, cover_url: d.cover || null, release_date: d.date || null, why: 'Saved from search', series: null };
+      if (await getSetting(store, 'hc_token', '')) {
+        try { const x = (await client.booksInfo([it.hardcover_book_id]))[0];
+          if (x) it = { ...it, author: it.author ?? x.author, author_id: x.author_id, rating: x.rating, pages: x.pages, series: x.series, cover_url: it.cover_url ?? x.cover_url, release_date: x.release_date ?? it.release_date };
+        } catch { /* save with what the search gave */ }
+      }
+      it.key = recKey(it);
+    }
     if (!it) return;
     let hc = null, note = '';
     if (await getSetting(store, 'hc_token', '')) {
@@ -1040,23 +1060,34 @@ const clickActions = {
     const date = await releaseDate(it);
     if (!isOut(date) && !(await watchList(store)).some((w) => w.hardcover_book_id === it.hardcover_book_id)
       && await watchBook(store, { ...it, release_date: date }, todayIso(), { auto: true })) note += date ? ' 🔔 You’ll hear when it’s out.' : ' 🔔 You’ll hear when it gets a date.';
-    toast(`Saved “${it.title}”.${note}`, { ms: 4500 }); await route();
+    toast(`Saved “${it.title}”.${note}`, { ms: 4500 });
+    await refreshAfter(el, wantBtn(it, it.key));
+    const bell = document.querySelector(`[data-click="watch"][data-id="${it.hardcover_book_id}"]`);   // search page: show the 🔔 it just switched on
+    if (bell && (await watchList(store)).some((w) => w.hardcover_book_id === it.hardcover_book_id)) bell.outerHTML = bellBtn(it, true);
   },
   async watch(el) {
     const d = el.dataset, b = { hardcover_book_id: Number(d.id), title: d.title, author: d.author || null, cover_url: d.cover || null };
     b.release_date = d.date || await releaseDate(b);
     if (!(await watchBook(store, b))) return toast(`“${b.title}” is already out.`, { ms: 3000 });
     toast(b.release_date ? `🔔 You'll hear if the date moves and when “${b.title}” comes out.` : `🔔 You'll hear when “${b.title}” gets a date.`, { ms: 4000 });
-    await route();
+    await refreshAfter(el, bellBtn(b, true));
   },
-  async unwatch(el) { await unwatchBook(store, Number(el.dataset.id)); await route(); },
+  async unwatch(el) {
+    const d = el.dataset;
+    await unwatchBook(store, Number(d.id));
+    await refreshAfter(el, bellBtn({ hardcover_book_id: Number(d.id), title: d.title, author: d.author || null, cover_url: d.cover || null, release_date: d.date || null }, false));
+  },
   async 'want-remove'(el) {
     const gone = await removeWant(store, el.dataset.key);
     if (gone && (await watchList(store)).some((w) => w.hardcover_book_id === gone.hardcover_book_id && w.auto)) await unwatchBook(store, gone.hardcover_book_id);
     if (gone?.hc_user_book_id && await getSetting(store, 'hc_token', '')) {
       try { await client.removeUserBook(gone.hc_user_book_id); } catch (e) { toast(`Removed here; Hardcover still lists it (${msg(e)}).`, { error: true }); }
     }
-    await route();
+    if (gone && location.hash.startsWith('#/search')) {
+      await refreshAfter(el, wantBtn(gone, null));
+      const bell = document.querySelector(`[data-click="unwatch"][data-id="${gone.hardcover_book_id}"]`);
+      if (bell && !(await watchList(store)).some((w) => w.hardcover_book_id === gone.hardcover_book_id)) bell.outerHTML = bellBtn(gone, false);
+    } else await route();
   },
   async 'pick-read'(el) {
     const it = currentPick;

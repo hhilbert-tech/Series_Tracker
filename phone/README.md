@@ -8,7 +8,7 @@ and popular books in your genres. Also on Discover:
 - *♥ Favourite* a book you've read (book pages, or *♥ Loved it* on a pick): favourites steer the picks at double weight.
 - *Not interested* twice for the same author (or genre row) sends the rest of them to the end; *Never suggest* hides an author.
 
-**Want to read** (tab): books you saved with *＋ Want to read* on a pick, also marked Want to Read on Hardcover when your token allows it.
+**Want to read** (tab): books you saved with *＋ Want to read* on a pick or a book search result, also marked Want to Read on Hardcover when your token allows it.
 Saving a book that isn't out yet turns on its 🔔.
 
 **Release alerts without bookkeeping:**
