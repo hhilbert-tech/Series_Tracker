@@ -139,7 +139,7 @@ async function viewFollowing() {
   const sortSel = `<details class="menu inline"><summary aria-label="Sort series">${esc(FOLLOW_SORTS.find(([k]) => k === sort)?.[1] ?? 'Sort')} ▾</summary><div class="menu-items">
     ${FOLLOW_SORTS.map(([k, v]) => `<button data-click="follow-sort" data-value="${k}" aria-pressed="${sort === k}">${sort === k ? '✓ ' : ''}${v}</button>`).join('')}
     ${hasToken && rows.length ? '<button data-click="sync-hc">Sync progress from Hardcover</button>' : ''}</div></details>`;
-  return `<div class="pagehead"><h1>Following</h1>${rows.length ? sortSel : ''}</div>${followNav('following', (await pendingEvents(store)).length)}
+  return `${MORE_BACK}<div class="pagehead"><h1>Following</h1>${rows.length ? sortSel : ''}</div>${followNav('following', (await pendingEvents(store)).length)}
     ${authors.length ? `${secHead(`Authors · ${authors.length}`, '')}<ul class="shelf authors">${authors.map((a) => shelfItem({ href: `#/author/${a.hardcover_author_id}`, ck: null, fb: a.cover_url,
       title: a.name, seed: a.name, author: a.name, line2: a.muted ? 'Muted' : '' })).join('')}</ul>` : ''}
     ${rows.length ? `${authors.length ? secHead(`Series · ${rows.length}`, '') : ''}<div class="filters" role="group" aria-label="Filter series">${FILTERS.filter(([k]) => k === 'all' || counts[k])
@@ -583,7 +583,7 @@ async function viewDiscover() {
     <section class="panel"><h2>Welcome</h2><p>Tell the app what you've read and which authors you like, and this page finds books like them.</p>
       <p><a class="btn" href="#/more/data">Import your reading history</a> <a class="btn" href="#/search">Search</a></p></section>`;
   const filter = { ...DEFAULT_FILTER, ...(await getSetting(store, 'pick_filter', {})) };
-  const all = recs?.items ?? [], items = filterPicks(all, filter), want = await wantList(store);
+  const all = recs?.items ?? [], items = filterPicks(all, filter);
   const note = !hasToken ? '<p class="meta">Add your Hardcover token (More → Hardcover account) to get books similar to what you read.</p>'
     : building ? `<p class="meta">Finding ${all.length ? 'more ' : ''}books for you…</p>`
     : recsError ? `<p class="meta">Picks unavailable: ${esc(recsError)}</p><p><button data-click="recs-refresh">Try again</button></p>`
@@ -597,8 +597,6 @@ async function viewDiscover() {
   return `<div class="pagehead"><h1>Discover</h1>${all.length ? `<span class="sechead-r"><a href="#/recs">All ${items.length} picks →</a>${hasToken ? '<details class="menu inline"><summary aria-label="Picks actions">⋯</summary><div class="menu-items"><button data-click="recs-refresh">Refresh picks</button></div></details>' : ''}</span>` : ''}</div>
     ${hasToken ? likeForm('') : ''}
     ${all.length ? filterBar(filter) : ''}
-    ${want.length ? `${secHead(`Want to read · ${want.length}`, want.length > 12 ? '#/want' : '')}<ul class="shelf">${want.slice(0, 12).map((r) =>
-      card(r, `<button class="shelf-x" data-click="want-remove" data-key="${esc(r.key)}" aria-label="Remove ${esc(r.title)} from Want to read">✕</button>`)).join('')}</ul>` : ''}
     ${shelves(items).map(shelf).join('')}${note}`;
 }
 
@@ -641,15 +639,19 @@ async function viewLike(params) {
   return `${head}<div id="like-results" aria-live="polite" aria-busy="true"><p class="meta">Searching…</p></div>`;
 }
 
+// Want to read tab: books saved from Discover, newest first; read ones drop off by themselves.
 async function viewWant() {
-  const want = await wantList(store);
-  return `<p><a class="back" href="#/">← Discover</a></p><div class="pagehead"><h1>Want to read</h1><span class="meta">${want.length} book${want.length === 1 ? '' : 's'}</span></div>
+  const want = await wantList(store), shop = await getSetting(store, 'store', 'hardcover');
+  return `<div class="pagehead"><h1>Want to read</h1>${want.length ? `<span class="meta">${want.length} book${want.length === 1 ? '' : 's'}</span>` : ''}</div>
     ${want.length ? `<ul class="cards">${want.map((r) => `<li class="card has-actions"><a class="cardlink" href="${pickHref(r)}">${img(null, r.cover_url, r.title, r.series?.name ?? r.title, 'cover', r.author)}
-      <div class="body"><h2>${esc(r.title)}</h2><p class="meta">${esc(r.author ?? 'Unknown author')}</p><p class="meta">${seriesLine(r.series)}</p></div></a>
-      <div class="card-actions"><button class="small" data-click="want-remove" data-key="${esc(r.key)}">Remove</button></div></li>`).join('')}</ul>`
-      : '<p class="meta">Nothing saved yet. Tap “＋ Want to read” on a pick.</p>'}`;
+      <div class="body"><h2>${esc(r.title)}</h2><p class="meta">${esc(r.author ?? 'Unknown author')}</p><p class="meta">${seriesLine(r.series)}</p>
+        ${r.rating ? `<p><span class="chip">★ ${r.rating.toFixed(1)}</span></p>` : ''}</div></a>
+      <div class="card-actions"><a class="btn small" target="_blank" rel="noopener" href="${esc(storeLink(shop, r.title, r.author ?? ''))}">Get it ↗</a>
+        <button class="small" data-click="want-remove" data-key="${esc(r.key)}">Remove</button></div></li>`).join('')}</ul>`
+      : '<section class="panel"><p>Nothing saved yet.</p><p class="meta">Tap “＋ Want to read” on any book in Discover to keep it here.</p><p><a class="btn" href="#/">Go to Discover</a></p></section>'}`;
 }
 
+const MORE_BACK = '<p><a class="back" href="#/more">← More</a></p>';
 // Following has three views: what you follow, their releases, and the updates feed (the unread count rides on Updates).
 const followNav = (cur, unseen) => `<nav class="filters" aria-label="Following">${[['following', '#/following', 'Series & authors'], ['releases', '#/releases', 'Releases'], ['updates', '#/updates', 'Updates']].map(([k, h, l]) =>
   `<a class="btn filter" href="${h}"${k === cur ? ' aria-current="page"' : ''}>${l}${k === 'updates' && unseen ? ` <span>${unseen}</span>` : ''}</a>`).join('')}</nav>`;
@@ -661,7 +663,7 @@ async function viewReleases() {
   const out = items.filter((i) => i.date <= today), soon = items.filter((i) => i.date > today);
   const nextUp = await collectNext(today, new Set(out.map((i) => i.href)));
   const nSeries = (await store.all('series')).length, nAuthors = (await store.all('author')).length;
-  const head = `<div class="pagehead"><h1>Following</h1></div>${followNav('releases', (await pendingEvents(store)).length)}`;
+  const head = `${MORE_BACK}<div class="pagehead"><h1>Following</h1></div>${followNav('releases', (await pendingEvents(store)).length)}`;
   if (!nSeries && !nAuthors) return `${head}<section class="panel"><p>Follow series and authors and this page shows what is coming out and what to read next.</p>
     <p><a class="btn" href="#/search">Search</a></p></section>`;
   const hero = soon[0], hw = hero && when(hero.date, today);
@@ -722,7 +724,7 @@ async function viewUpdates() {
       ${canRead ? `<div class="card-actions"><button class="small primary" data-click="toggle-read" data-id="${n.series_id}" data-pos="${n.position}" data-dismiss="${esc(n.key)}">Mark read</button></div>` : ''}
       <button class="card-x" data-click="dismiss-update" data-key="${esc(n.key)}" aria-label="Dismiss">✕</button></li>`;
   };
-  return `<div class="pagehead"><h1>Following</h1>${list.length ? `<details class="menu inline"><summary aria-label="Update actions">⋯</summary><div class="menu-items">
+  return `${MORE_BACK}<div class="pagehead"><h1>Following</h1>${list.length ? `<details class="menu inline"><summary aria-label="Update actions">⋯</summary><div class="menu-items">
       ${unseen ? '<button data-click="mark-seen">Mark all seen</button>' : ''}<button data-click="dismiss-all">Clear all</button></div></details>` : ''}</div>
     ${followNav('updates', unseen)}
     ${list.length ? `<p class="meta swipe-hint">Swipe an update sideways to dismiss it.</p>${groups.map((g) => `${secHead(g.label, '')}<ul class="cards">${g.items.map(card).join('')}</ul>`).join('')}`
@@ -760,7 +762,7 @@ async function viewReview(params) {
       <p><button data-click="ignore" data-id="${g.lead.id}">Ignore</button></p></section>`).join('')}`;
 }
 
-const MORE = [['appearance', 'Appearance', 'Theme and where “Get it” links go'], ['account', 'Hardcover account', 'Your API token'],
+const MORE = [['following', 'Following & releases', 'Series and authors you follow, releases, updates'], ['appearance', 'Appearance', 'Theme and where “Get it” links go'], ['account', 'Hardcover account', 'Your API token'],
   ['data', 'Your data', 'Import, backup and restore, books to review'], ['stats', 'Reading stats', 'Books and pages read, series finished'],
   ['calendar', 'Release calendar', 'Add upcoming releases to your calendar'], ['advanced', 'Checking & advanced', 'Check now, background alerts, verify Hardcover']];
 async function viewMore(sub) {
@@ -770,13 +772,14 @@ async function viewMore(sub) {
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   if (sub === 'stats') return viewStats();
   if (sub === 'calendar') return viewCalendar();
-  const page = MORE.find(([k]) => k === sub);
+  const page = MORE.find(([k]) => k === sub && k !== 'following'), unseen = (await pendingEvents(store)).length;
   if (!page) return `<div class="pagehead"><h1>More</h1></div>
-    <ul class="menu-list">${MORE.map(([k, t, d]) => `<li><a href="#/more/${k}"><span><strong>${t}</strong><span class="meta">${d}</span></span>
+    <ul class="menu-list">${MORE.map(([k, t, d]) => `<li><a href="${k === 'following' ? '#/following' : `#/more/${k}`}"><span><strong>${t}</strong><span class="meta">${d}</span></span>
+      ${k === 'following' && unseen ? `<span class="badge fill" aria-label="${unseen} new updates">${unseen}</span>` : ''}
       ${(k === 'data' && backupDue) || (k === 'account' && !hasToken) ? '<span class="dot" aria-label="needs attention"></span>' : ''}<span class="chev" aria-hidden="true">›</span></a></li>`).join('')}</ul>
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}
-    <p class="meta center">Book Finder · v16</p>`;
+    <p class="meta center">Book Finder · v17</p>`;
   const head = `<p><a class="back" href="#/more">← More</a></p><div class="pagehead"><h1>${page[1]}</h1></div>`;
   if (sub === 'appearance') {
     const shopPref = await getSetting(store, 'store', 'hardcover');
@@ -784,7 +787,7 @@ async function viewMore(sub) {
       ${THEMES.map((t) => `<button data-click="theme" data-value="${t}" aria-pressed="${theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></section>
     <section class="panel"><h2>Where to get books</h2><div class="seg" role="group" aria-label="Store">
       ${Object.entries(STORES).map(([k, v]) => `<button data-click="set-store" data-value="${k}" aria-pressed="${shopPref === k}">${v}</button>`).join('')}</div>
-      <p class="meta">“Get it” and “Pre-order” links on book pages, in Discover and in Following → Releases open a search here.</p></section>`;
+      <p class="meta">“Get it” and “Pre-order” links on book pages, in Discover, Want to read and Releases open a search here.</p></section>`;
   }
   if (sub === 'account') return `${head}<section class="panel">
       <p class="meta">${hasToken ? 'A token is saved on this phone.' : 'Needed for matching, search and checks.'} It is stored only on this device and sent only to Hardcover. Tokens expire; paste a new one if you see “rejected”.</p>
@@ -894,8 +897,7 @@ async function route() {
   const [path, qs = ''] = location.hash.replace(/^#/, '').split('?');
   const params = new URLSearchParams(qs);
   const [, seg, arg] = path.split('/');
-  const tab = { '': 'discover', pick: 'discover', rec: 'discover', recs: 'discover', like: 'discover', want: 'discover', releases: 'following', upcoming: 'following', continue: 'following', updates: 'following',
-    following: 'following', series: 'following', book: 'following', author: 'following', abook: 'following', search: 'search' }[seg ?? ''] ?? 'more';
+  const tab = { '': 'discover', pick: 'discover', rec: 'discover', recs: 'discover', like: 'discover', want: 'want', search: 'search' }[seg ?? ''] ?? 'more';
   let html;
   try {
     html = await ({ '': viewDiscover, releases: viewReleases, pick: () => viewPick(arg, params), like: () => viewLike(params), want: viewWant, series: () => viewSeries(arg), book: () => viewBook(arg, path.split('/')[3]), author: () => viewAuthor(arg), abook: () => viewAuthorBook(arg, path.split('/')[3]), rec: () => viewRec(arg, params), recs: () => viewRecs(params), continue: viewContinue, upcoming: viewUpcoming, following: viewFollowing, search: () => viewSearch(params), updates: viewUpdates,
@@ -1016,7 +1018,7 @@ const clickActions = {
   },
   async 'pick-follow-author'(el) {
     const aid = await followAuthor(store, client, { hardcover_author_id: Number(el.dataset.id), name: el.dataset.name });
-    toast(`Following ${el.dataset.name}. Their books show in Discover; new ones under Following → Updates.`); location.hash = `#/author/${aid}`;
+    toast(`Following ${el.dataset.name}. Their books show in Discover; new ones under More → Following & releases.`); location.hash = `#/author/${aid}`;
   },
   async 'recs-refresh'() {
     recsError = null;
@@ -1124,7 +1126,7 @@ const formActions = {
   },
   async 'follow-author'(fd) {
     const aid = await followAuthor(store, client, { hardcover_author_id: Number(fd.get('hardcover_author_id')), name: fd.get('name'), cover_url: fd.get('cover_url') || null });
-    toast(`Following ${fd.get('name')}. Their books show in Discover; new ones under Following → Updates.`); location.hash = `#/author/${aid}`;
+    toast(`Following ${fd.get('name')}. Their books show in Discover; new ones under More → Following & releases.`); location.hash = `#/author/${aid}`;
   },
   async 'add-book'(fd) {
     const r = await addSearchBook(store, client, { hardcover_book_id: Number(fd.get('hardcover_book_id')), title: fd.get('title'),
