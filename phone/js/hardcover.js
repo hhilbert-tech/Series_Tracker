@@ -131,9 +131,10 @@ export class HardcoverClient {
   // Description and page count for one book (shown on the book page; fetched on demand).
   async bookDetails(bookId) {
     const data = await this._cached('bd' + bookId, () => this.gql(
-      'query BookDetails($id: Int!) { books(where: {id: {_eq: $id}}, limit: 1) { description pages rating } }', { id: Number(bookId) }));
+      'query BookDetails($id: Int!) { books(where: {id: {_eq: $id}}, limit: 1) { description pages rating release_date } }', { id: Number(bookId) }));
     const b = data.books?.[0] ?? {};
-    return { description: b.description ? String(b.description) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null, rating: Number(b.rating) > 0 ? Number(b.rating) : null };
+    return { description: b.description ? String(b.description) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null, rating: Number(b.rating) > 0 ? Number(b.rating) : null,
+      release_date: dateOf(b.release_date) };
   }
 
   async findByIsbn(isbn) {
@@ -279,14 +280,14 @@ export class HardcoverClient {
     const data = await this.gql(`query PopularInGenre($tag: jsonb!) { books(
       where: {cached_tags: {_contains: $tag}, canonical_id: {_is_null: true}, book_series: {position: {_eq: 1}}}
       order_by: {users_count: desc}, limit: 20
-    ) { id title users_count rating pages image { url } book_series(where: {position: {_eq: 1}}, limit: 1) { series { ${SERIES_FIELDS} } } } }`, { tag: { [category]: [{ tagSlug: slug }] } });
+    ) { id title release_date users_count rating pages image { url } book_series(where: {position: {_eq: 1}}, limit: 1) { series { ${SERIES_FIELDS} } } } }`, { tag: { [category]: [{ tagSlug: slug }] } });
     const out = [];
     for (const b of data.books ?? []) {
       const s = b.book_series?.[0]?.series;
       if (!s?.id) continue;
       out.push({ hardcover_series_id: Number(s.id), name: s.name ?? '', author: s.author?.name ?? null, cover_url: b.image?.url ?? null,
         complete: Boolean(s.is_completed), users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null,
-        hardcover_book_id: Number(b.id) || null, title: b.title ?? null, pages: Number(b.pages) > 0 ? Number(b.pages) : null });
+        hardcover_book_id: Number(b.id) || null, title: b.title ?? null, pages: Number(b.pages) > 0 ? Number(b.pages) : null, release_date: dateOf(b.release_date) });
     }
     return out;
   }

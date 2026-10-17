@@ -39,7 +39,7 @@ const fromInfo = (b) => ({ hardcover_book_id: b.hardcover_book_id, title: b.titl
   cover_url: b.cover_url ?? null, rating: b.rating ?? null, pages: b.pages ?? null, users_count: b.users_count ?? 0, release_date: b.release_date ?? null, series: b.series ?? null });
 // A series found without a specific book (author/genre lookups): shown by its name.
 const fromSeries = (s) => ({ hardcover_book_id: s.hardcover_book_id ?? null, title: s.title || s.name, author: s.author ?? null, author_id: null,
-  cover_url: s.cover_url ?? null, rating: s.rating ?? null, pages: s.pages ?? null, users_count: s.users_count ?? 0,
+  cover_url: s.cover_url ?? null, rating: s.rating ?? null, pages: s.pages ?? null, users_count: s.users_count ?? 0, release_date: s.release_date ?? null,
   series: { hardcover_series_id: s.hardcover_series_id, name: s.name, author: s.author ?? null, complete: Boolean(s.complete), position: s.hardcover_book_id ? 1 : null } });
 
 // Series picks that aren't book #1 (or have no book yet) switch to book #1, in one request, unless you've read #1.
@@ -218,6 +218,17 @@ export async function addWant(store, it, extra = {}) {
   const list = (await getSetting(store, 'want', [])).filter((w) => w.key !== it.key);
   const { key, hardcover_book_id, title, author, author_id, cover_url, rating, pages, series, why, release_date } = it;
   await setSetting(store, 'want', [...list, { key, hardcover_book_id, title, author, author_id, cover_url, rating, pages, series, why, release_date: release_date ?? null, kind: 'want', saved_at: nowIso(), ...extra }]);
+}
+// Saved books without a release date (saved before dates were kept, or from a source without one): look them up once,
+// in one request, so a book that's already out stops offering 🔔. Returns true when something changed.
+export async function fillWantDates(store, client) {
+  const need = (await getSetting(store, 'want', [])).filter((w) => !w.release_date && !w.date_checked);
+  if (!need.length) return false;
+  const info = new Map((await client.booksInfo(need.map((w) => w.hardcover_book_id))).map((b) => [b.hardcover_book_id, b]));
+  const keys = new Set(need.map((w) => w.key));
+  await setSetting(store, 'want', (await getSetting(store, 'want', [])).map((w) => (keys.has(w.key) && !w.release_date
+    ? { ...w, release_date: info.get(w.hardcover_book_id)?.release_date ?? null, date_checked: true } : w)));
+  return true;
 }
 export async function removeWant(store, key) {
   const list = await getSetting(store, 'want', []), gone = list.find((w) => w.key === key);

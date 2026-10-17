@@ -82,7 +82,7 @@ test('Hardcover client: authorSeries is one aliased request and filters other au
     { id: 11, genres: [{ slug: 'fantasy', name: 'Fantasy', count: 4 }], tags: [{ slug: 'dark-fantasy', name: 'Dark Fantasy', count: 2 }], categories: ['Genre', 'Tag'] },
     { id: 12, genres: [{ slug: 'horror', name: 'Horror', count: 1 }], tags: [], categories: ['Genre'] }, { id: 13, genres: [], tags: [], categories: [] }]);
   const g = await c.popularInGenre('fantasy');
-  assert.deepEqual(g, [{ hardcover_series_id: 5, name: 'S', author: 'A', cover_url: 'u', complete: true, users_count: 7, rating: null, hardcover_book_id: 1, title: null, pages: null }]);
+  assert.deepEqual(g, [{ hardcover_series_id: 5, name: 'S', author: 'A', cover_url: 'u', complete: true, users_count: 7, rating: null, hardcover_book_id: 1, title: null, pages: null, release_date: null }]);
   assert.deepEqual(bodies[2].variables, { tag: { Genre: [{ tagSlug: 'fantasy' }] } });
 });
 
@@ -274,4 +274,17 @@ test('similarTo: one book in, picks out; read books and the book itself left out
   client.firsts[90] = { hardcover_book_id: 901, title: 'Shallow' };
   const out = await similarTo(store, client, 500, 'Seed');
   assert.deepEqual(out.map((i) => [i.title, i.key, i.why]), [['Shallow', 's:90', 'Similar to Seed'], ['Solo', 'b:43', 'Similar to Seed']]);
+});
+
+test('fillWantDates: missing dates are looked up once in one request; known ones are left alone', async () => {
+  const { fillWantDates } = await import('../js/recs.js');
+  const store = new MemStore(), client = new FakeClient();
+  const w = (k, d) => ({ key: k, hardcover_book_id: Number(k.slice(2)), title: k, release_date: d });
+  await setSetting(store, 'want', [w('b:1', null), w('b:2', '2027-01-01'), w('b:3', null)]);
+  client.info[1] = { title: 'b:1', release_date: '2016-04-01', series: null };        // book 3: Hardcover has no date either
+  assert.equal(await fillWantDates(store, client), true);
+  assert.deepEqual(client.calls.find((c) => c[0] === 'booksInfo')[1], [1, 3]);
+  const got = Object.fromEntries((await wantList(store)).map((x) => [x.key, [x.release_date, Boolean(x.date_checked)]]));
+  assert.deepEqual(got, { 'b:1': ['2016-04-01', true], 'b:2': ['2027-01-01', false], 'b:3': [null, true] });
+  assert.equal(await fillWantDates(store, client), false);                              // nothing left to look up
 });

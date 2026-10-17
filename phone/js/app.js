@@ -8,7 +8,7 @@ import { followAuthor, removeAuthor, refreshAuthorMeta } from './authors.js';
 import { fmtDate, when, ago, isEstimated, STORES, storeLink } from './format.js';
 import { buildIcs } from './ics.js';
 import { buildRecs, loadRecs, dismissRec, recsStale, shelves, recKey, similarTo, getFavourites, toggleFavourite, hideAuthor, unhideAuthor,
-  wantList, addWant, removeWant, filterPicks, DEFAULT_FILTER, readBooks } from './recs.js';
+  wantList, addWant, removeWant, filterPicks, DEFAULT_FILTER, readBooks, fillWantDates } from './recs.js';
 import { watchList, watchBook, unwatchBook, isOut } from './watch.js';
 import { runCheck, updates, pendingEvents, markAllSeen, dismissUpdate, dismissAllUpdates } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
@@ -331,6 +331,7 @@ async function viewPick(key, params) {
     if (!box) return;
     try {
       const d = await client.bookDetails(it.hardcover_book_id);
+      if (!it.release_date && d.release_date && isOut(d.release_date)) document.querySelector(`[data-click="watch"][data-id="${it.hardcover_book_id}"]`)?.remove();
       box.innerHTML = [d.pages || (d.rating && !it.rating) ? `<p class="meta">${[d.rating && !it.rating ? `★ ${d.rating.toFixed(1)}` : '', d.pages ? `${d.pages} pages` : ''].filter(Boolean).join(' · ')}</p>` : '',
         d.description ? `<p class="desc">${esc(d.description).replace(/\n+/g, '</p><p class="desc">')}</p>` : '<p class="meta">No description on Hardcover.</p>'].join('');
     } catch (e) { box.innerHTML = `<p class="meta">Details unavailable: ${esc(msg(e))}</p>`; }
@@ -682,13 +683,16 @@ async function viewWant() {
   const watched = new Set(watching.map((w) => w.hardcover_book_id)), inWant = new Set(want.map((w) => w.hardcover_book_id));
   const others = watching.filter((w) => !inWant.has(w.hardcover_book_id)).sort((x, y) => (x.release_date ?? '9999').localeCompare(y.release_date ?? '9999'));
   const dateLine = (d) => (d ? `<p>${chip(when(d, today))} <span class="meta">${esc(fmtDate(d, today))}</span></p>` : '');
+  if (want.some((w) => !w.release_date && !w.date_checked) && await getSetting(store, 'hc_token', '')) {
+    afterRender = async () => { try { if (await fillWantDates(store, client) && location.hash === '#/want') await route(); } catch { /* shown as-is */ } };
+  }
   const card = (r, extra) => `<li class="card has-actions"><a class="cardlink" href="${pickHref(r)}">${img(null, r.cover_url, r.title, r.series?.name ?? r.title, 'cover', r.author)}
       <div class="body"><h2>${esc(r.title)}</h2><p class="meta">${esc(r.author ?? 'Unknown author')}</p>${r.series !== undefined ? `<p class="meta">${seriesLine(r.series)}</p>` : ''}
         ${r.release_date && !isOut(r.release_date, today) ? dateLine(r.release_date) : r.rating ? `<p><span class="chip">★ ${r.rating.toFixed(1)}</span></p>` : ''}</div></a>
       <div class="card-actions">${isOut(r.release_date, today) || !r.release_date ? `<a class="btn small" target="_blank" rel="noopener" href="${esc(storeLink(shop, r.title, r.author ?? ''))}">Get it ↗</a>` : ''}
         ${extra}</div></li>`;
   return `<div class="pagehead"><h1>Want to read</h1>${want.length ? `<span class="meta">${want.length} book${want.length === 1 ? '' : 's'}</span>` : ''}</div>
-    ${want.length ? `<ul class="cards">${want.map((r) => card(r, `${isOut(r.release_date, today) ? '' : bellBtn(r, watched.has(r.hardcover_book_id))}
+    ${want.length ? `<ul class="cards">${want.map((r) => card(r, `${isOut(r.release_date, today) || (!r.release_date && !r.date_checked) ? '' : bellBtn(r, watched.has(r.hardcover_book_id))}
         <button class="small" data-click="want-remove" data-key="${esc(r.key)}">Remove</button>`)).join('')}</ul>`
       : '<section class="panel"><p>Nothing saved yet.</p><p class="meta">Tap “＋ Want to read” on any book in Discover to keep it here.</p><p><a class="btn" href="#/">Go to Discover</a></p></section>'}
     ${others.length ? `${secHead(`Notifying you · ${others.length}`, '')}<p class="meta">Books you tapped 🔔 on: you hear when they get a date, when it moves, and when they come out.</p>
@@ -824,7 +828,7 @@ async function viewMore(sub) {
       ${(k === 'data' && backupDue) || (k === 'account' && !hasToken) ? '<span class="dot" aria-label="needs attention"></span>' : ''}<span class="chev" aria-hidden="true">›</span></a></li>`).join('')}</ul>
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}
-    <p class="meta center">Book Finder · v19</p>`;
+    <p class="meta center">Book Finder · v20</p>`;
   const head = `<p><a class="back" href="#/more">← More</a></p><div class="pagehead"><h1>${page[1]}</h1></div>`;
   if (sub === 'appearance') {
     const shopPref = await getSetting(store, 'store', 'hardcover');
