@@ -36,7 +36,7 @@ export async function readBooks(store) {
 }
 
 const fromInfo = (b) => ({ hardcover_book_id: b.hardcover_book_id, title: b.title, author: b.author ?? b.series?.author ?? null, author_id: b.author_id ?? null,
-  cover_url: b.cover_url ?? null, rating: b.rating ?? null, pages: b.pages ?? null, users_count: b.users_count ?? 0, series: b.series ?? null });
+  cover_url: b.cover_url ?? null, rating: b.rating ?? null, pages: b.pages ?? null, users_count: b.users_count ?? 0, release_date: b.release_date ?? null, series: b.series ?? null });
 // A series found without a specific book (author/genre lookups): shown by its name.
 const fromSeries = (s) => ({ hardcover_book_id: s.hardcover_book_id ?? null, title: s.title || s.name, author: s.author ?? null, author_id: null,
   cover_url: s.cover_url ?? null, rating: s.rating ?? null, pages: s.pages ?? null, users_count: s.users_count ?? 0,
@@ -54,7 +54,7 @@ async function toFirstBooks(client, list, read, fail) {
     if (!f || read.has(f.hardcover_book_id)) continue;
     const via = it.hardcover_book_id && f.hardcover_book_id !== it.hardcover_book_id ? `${it.series.position != null ? `#${it.series.position} ` : ''}${it.title}` : null;
     Object.assign(it, { hardcover_book_id: f.hardcover_book_id, title: f.title || it.title, author: f.author ?? it.author, author_id: f.author_id ?? it.author_id,
-      cover_url: f.cover_url ?? it.cover_url, rating: f.rating ?? it.rating, pages: f.pages ?? it.pages ?? null, users_count: f.users_count || it.users_count,
+      cover_url: f.cover_url ?? it.cover_url, rating: f.rating ?? it.rating, pages: f.pages ?? it.pages ?? null, users_count: f.users_count || it.users_count, release_date: f.release_date ?? null,
       series: { ...it.series, position: 1 }, ...(via ? { via } : {}) });
   }
 }
@@ -159,7 +159,7 @@ export async function authorPicks(store, today = todayIso()) {
   for (const r of await store.all('author_book')) {
     const a = authors.get(r.author_id);
     if (!a || r.read || (r.release_date && r.release_date.slice(0, 10) > today) || (r.series_id != null && followed.has(r.series_id))) continue;
-    const it = { hardcover_book_id: r.hardcover_book_id, title: r.title, author: a.name, author_id: a.hardcover_author_id, cover_url: r.cover_url ?? null,
+    const it = { hardcover_book_id: r.hardcover_book_id, title: r.title, author: a.name, author_id: a.hardcover_author_id, cover_url: r.cover_url ?? null, release_date: r.release_date ?? null,
       rating: null, users_count: r.users_count ?? 0, kind: 'followed', why: `By ${a.name}`, group: 'From authors you follow', rank: T_FOLLOWED + cap(r.users_count),
       series: r.series_id != null ? { hardcover_series_id: r.series_id, name: r.series_name ?? '', author: a.name, complete: false, position: r.series_position ?? null } : null };
     const k = recKey(it), cur = best.get(k);
@@ -216,8 +216,8 @@ export async function wantList(store) {
 }
 export async function addWant(store, it, extra = {}) {
   const list = (await getSetting(store, 'want', [])).filter((w) => w.key !== it.key);
-  const { key, hardcover_book_id, title, author, author_id, cover_url, rating, pages, series, why } = it;
-  await setSetting(store, 'want', [...list, { key, hardcover_book_id, title, author, author_id, cover_url, rating, pages, series, why, kind: 'want', saved_at: nowIso(), ...extra }]);
+  const { key, hardcover_book_id, title, author, author_id, cover_url, rating, pages, series, why, release_date } = it;
+  await setSetting(store, 'want', [...list, { key, hardcover_book_id, title, author, author_id, cover_url, rating, pages, series, why, release_date: release_date ?? null, kind: 'want', saved_at: nowIso(), ...extra }]);
 }
 export async function removeWant(store, key) {
   const list = await getSetting(store, 'want', []), gone = list.find((w) => w.key === key);

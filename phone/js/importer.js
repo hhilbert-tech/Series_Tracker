@@ -1,7 +1,8 @@
 // Import (Goodreads CSV / Hardcover library), series matching, and the shared "follow a series" step.
 import { HardcoverAuthError, HardcoverError } from './hardcover.js';
-import { bumpProgress, nowIso, todayIso, upsertSeries, removedSeriesIds } from './db.js';
+import { bumpProgress, nowIso, todayIso, upsertSeries, removedSeriesIds, lastReleased } from './db.js';
 import { syncSeries } from './check.js';
+import { readBooks } from './recs.js';
 import { parseGoodreadsCsv, cleanIsbn } from './parse.js';
 
 const NOISE = new Set(['the', 'a', 'an', 'series', 'saga', 'trilogy', 'cycle']);
@@ -52,6 +53,8 @@ export async function resolveSeries(client, name, author, isbns) {
 }
 
 // Create/refresh a tracked series, raise progress, and baseline-sync its books on first sight.
+// info.mode: 'new' = only new books matter (everything already out counts as done), otherwise you're reading it.
+// Either way, books you've already logged elsewhere (imports, "I've read it", author pages) set your place.
 export async function followSeries(store, client, info, readUpTo = 0, covers = null, today = null) {
   const sid = await upsertSeries(store, info.hardcover_series_id, info.name, info.author ?? null, info.complete ?? false, info.cover_url ?? null);
   await bumpProgress(store, sid, readUpTo || 0);
@@ -61,6 +64,10 @@ export async function followSeries(store, client, info, readUpTo = 0, covers = n
     catch (e) { if (e instanceof HardcoverError) return sid; throw e; }   // nightly-style check will baseline it
     await syncSeries(store, sid, books, today ?? todayIso(), true, covers);
     await store.put('series', { ...(await store.get('series', sid)), last_checked_at: nowIso() });
+    const { ids } = await readBooks(store);
+    const mine = (await store.all('series_book')).filter((r) => r.series_id === sid && ids.has(r.hardcover_book_id)).map((r) => r.position);
+    if (mine.length) await bumpProgress(store, sid, maxIntRead(mine));
+    if (info.mode === 'new') await bumpProgress(store, sid, await lastReleased(store, sid, today ?? todayIso()));
   }
   return sid;
 }

@@ -8,13 +8,14 @@ import { followAuthor, removeAuthor, refreshAuthorMeta } from './authors.js';
 import { fmtDate, when, ago, isEstimated, STORES, storeLink } from './format.js';
 import { buildIcs } from './ics.js';
 import { buildRecs, loadRecs, dismissRec, recsStale, shelves, recKey, similarTo, getFavourites, toggleFavourite, hideAuthor, unhideAuthor,
-  wantList, addWant, removeWant, filterPicks, DEFAULT_FILTER } from './recs.js';
+  wantList, addWant, removeWant, filterPicks, DEFAULT_FILTER, readBooks } from './recs.js';
+import { watchList, watchBook, unwatchBook, isOut } from './watch.js';
 import { runCheck, updates, pendingEvents, markAllSeen, dismissUpdate, dismissAllUpdates } from './check.js';
 import { importGoodreads, importHardcover, followSeries, addManualBook, addSearchBook, reviewGroups, assignGroup, ignoreGroup } from './importer.js';
 import { KEYS } from './store-base.js';
 
 const THEMES = ['system', 'light', 'dark'];
-const LABEL = { announced: 'New book', date_changed: 'Date changed', released: 'Now out' };
+const LABEL = { announced: 'New book', date_changed: 'Date changed', released: 'Now out', dated: 'Date announced' };
 const CHECK_EVERY_MS = 12 * 3600 * 1000;
 const $app = document.getElementById('app');
 let store, covers, client, theme = 'system', checking = false, searchSeq = 0, installPrompt = null, afterRender = null;
@@ -273,11 +274,27 @@ async function viewAuthorBook(aid, bid) {
     <div id="book-more"><p class="meta">Loading details…</p></div><div id="similar"></div>`;
 }
 
+// Follow a series with a choice: only hear about new books, or track your reading too.
+const followMenu = (d, label = 'Follow series') => { const attrs = `data-hc="${d.hc}" data-name="${esc(d.name)}" data-author="${esc(d.author ?? '')}" data-cover="${esc(d.cover ?? '')}" data-complete="${d.complete ? 1 : ''}"`;
+  return `<details class="menu inline follow"><summary>${esc(label)} ▾</summary><div class="menu-items">
+    <button data-click="rec-follow" data-mode="new" ${attrs}><strong>Only new books</strong><span class="meta">Alerts for books not out yet</span></button>
+    <button data-click="rec-follow" data-mode="reading" ${attrs}><strong>I'm reading it</strong><span class="meta">Also track which book is next</span></button></div></details>`; };
+// 🔔 for one book: alerts when it gets a date, the date moves, and it comes out.
+const bellBtn = (b, on) => `<button class="small" data-click="${on ? 'unwatch' : 'watch'}" data-id="${b.hardcover_book_id}" data-title="${esc(b.title)}" data-author="${esc(b.author ?? '')}"
+  data-cover="${esc(b.cover_url ?? '')}" data-date="${esc(b.release_date ?? '')}" aria-pressed="${on}">${on ? '🔔 Notifying' : '🔔 Notify me'}</button>`;
+
+// A book's release date: as known, else one Hardcover lookup (null when unknown or offline).
+async function releaseDate(b) {
+  if (b.release_date !== undefined && b.release_date !== null) return b.release_date;
+  if (!(await getSetting(store, 'hc_token', ''))) return null;
+  try { return (await client.booksInfo([b.hardcover_book_id]))[0]?.release_date ?? null; } catch { return null; }
+}
+
 // Link to a suggestion's page. The query carries enough to show it even once it has left the saved picks.
 function pickHref(it) {
   const s = it.series;
   if (!it.hardcover_book_id && s) return `#/rec/${s.hardcover_series_id}?${new URLSearchParams({ n: s.name, a: s.author ?? it.author ?? '', c: it.cover_url ?? '', w: it.why ?? '' })}`;
-  const q = { b: it.hardcover_book_id, t: it.title ?? '', a: it.author ?? '', ai: it.author_id ?? '', c: it.cover_url ?? '', w: it.why ?? '', v: it.via ?? '' };
+  const q = { b: it.hardcover_book_id, t: it.title ?? '', a: it.author ?? '', ai: it.author_id ?? '', c: it.cover_url ?? '', w: it.why ?? '', v: it.via ?? '', d: it.release_date ?? '' };
   if (s) Object.assign(q, { s: s.hardcover_series_id, sn: s.name ?? '', sp: s.position ?? '', sc: s.complete ? 1 : '' });
   return `#/pick/${encodeURIComponent(it.key ?? recKey(it))}?${new URLSearchParams(q)}`;
 }
@@ -291,7 +308,7 @@ async function viewPick(key, params) {
   const p = (k) => params.get(k) || null;
   const saved = (await wantList(store)).find((w) => w.key === key);
   const it = (await loadRecs(store))?.items.find((i) => i.key === key) ?? saved ?? (p('b') ? { key, hardcover_book_id: Number(p('b')), title: p('t') ?? '', author: p('a'),
-    author_id: Number(p('ai')) || null, cover_url: p('c'), why: p('w') ?? 'Suggested', kind: 'similar', rating: null, via: p('v'),
+    author_id: Number(p('ai')) || null, cover_url: p('c'), why: p('w') ?? 'Suggested', kind: 'similar', rating: null, via: p('v'), release_date: p('d'),
     series: p('s') ? { hardcover_series_id: Number(p('s')), name: p('sn') ?? '', author: p('a'), position: p('sp') != null ? Number(p('sp')) : null, complete: Boolean(p('sc')) } : null } : null);
   if (!it) return '<p>Suggestion no longer available. <a href="#/">Back to Discover</a></p>';
   const s = it.series;
@@ -300,6 +317,7 @@ async function viewPick(key, params) {
   const own = s && (await store.all('series')).find((x) => x.hardcover_series_id === s.hardcover_series_id);
   const authorFollowed = it.author_id && await store.get('author', it.author_id);
   const shop = await getSetting(store, 'store', 'hardcover');
+  const watching = (await watchList(store)).some((w) => w.hardcover_book_id === it.hardcover_book_id), notOut = !isOut(it.release_date);
   afterRender = async () => {
     const box = document.getElementById('book-more');
     if (!box) return;
@@ -315,11 +333,13 @@ async function viewPick(key, params) {
       <div class="body"><h1>${esc(it.title)}</h1><p class="meta">${esc(it.author ?? 'Unknown author')}</p>
         <p class="meta">${own ? `<a href="#/series/${own.id}">${seriesLine(s)}</a> · following` : seriesLine(s)}</p>
         <p><span class="chip ${it.kind === 'followed' ? 'near' : ''}">${esc(it.why)}</span>${it.rating ? ` <span class="chip">★ ${it.rating.toFixed(1)}</span>` : ''}</p>
+        ${it.release_date && notOut ? `<p>${chip(when(it.release_date))} <span class="meta">${esc(fmtDate(it.release_date))}</span></p>` : ''}
         ${it.via ? `<p class="meta">Matched on ${esc(it.via)}; this is where the series starts.</p>` : ''}</div></div>
     <div class="actions"><a class="btn primary" target="_blank" rel="noopener" href="${esc(storeLink(shop, it.title, it.author ?? ''))}">Get it · ${STORES[shop] ?? 'Hardcover'} ↗</a>
       <button data-click="${saved ? 'want-remove' : 'want-add'}" data-key="${esc(it.key)}" aria-pressed="${Boolean(saved)}">${saved ? '✓ Want to read' : '＋ Want to read'}</button></div>
     <div class="actions">
-      ${s && !own ? `<button class="small" data-click="rec-follow" data-hc="${s.hardcover_series_id}" data-name="${esc(s.name)}" data-author="${esc(s.author ?? it.author ?? '')}" data-cover="${esc(it.cover_url ?? '')}" data-complete="${s.complete ? 1 : ''}">Follow series</button>` : ''}
+      ${s && !own ? followMenu({ hc: s.hardcover_series_id, name: s.name, author: s.author ?? it.author, cover: it.cover_url, complete: s.complete }) : ''}
+      ${notOut ? bellBtn(it, watching) : ''}
       ${!s && it.author_id && !authorFollowed ? `<button class="small" data-click="pick-follow-author" data-id="${it.author_id}" data-name="${esc(it.author ?? '')}">Follow ${esc(it.author ?? 'author')}</button>` : ''}
       <button class="small" data-click="pick-read">I've read it</button>
       <button class="small" data-click="pick-read" data-love="1">♥ Loved it</button>
@@ -353,7 +373,7 @@ async function viewRec(id, params = new URLSearchParams()) {
     <div class="hero">${img(null, r.cover_url, r.name, r.name, 'cover big')}
       <div class="body"><h1>${esc(r.name)}</h1><p class="meta">${esc(r.author ?? 'Unknown author')}</p>
         <p><span class="chip ${r.kind === 'author' ? 'near' : ''}">${esc(r.why)}</span></p></div></div>
-    <div class="actions"><button class="primary" data-click="rec-follow" data-hc="${id}" data-name="${esc(r.name)}" data-author="${esc(r.author ?? '')}" data-cover="${esc(r.cover_url ?? '')}" data-complete="${r.complete ? 1 : ''}">Follow</button>
+    <div class="actions">${followMenu({ hc: id, name: r.name, author: r.author, cover: r.cover_url, complete: r.complete }, 'Follow')}
       <button data-click="rec-dismiss" data-key="s:${id}" data-author="${esc(r.author ?? '')}" data-home="1">Not interested</button></div>
     <div id="book-more"><p class="meta">Loading details…</p></div>`;
 }
@@ -385,7 +405,7 @@ async function viewAuthor(id) {
     const mine = followed.get(g.id), cover = g.books.find((b) => b.cover_url)?.cover_url ?? '';
     g.books.sort((x, y) => (x.series_position ?? 1e9) - (y.series_position ?? 1e9));
     return `<div class="grouphead"><h2 class="label">${mine ? `<a href="#/series/${mine.id}">${esc(g.name)}</a>` : esc(g.name)} <span class="meta">· ${g.books.length} book${g.books.length > 1 ? 's' : ''}</span></h2>
-      ${mine ? '<span class="badge">Following</span>' : `<button class="small" data-click="rec-follow" data-hc="${g.id}" data-name="${esc(g.name)}" data-author="${esc(a.name)}" data-cover="${esc(cover)}">Follow series</button>`}</div>
+      ${mine ? '<span class="badge">Following</span>' : followMenu({ hc: g.id, name: g.name, author: a.name, cover })}</div>
       <ul class="rows">${g.books.map((b) => row(b, true)).join('')}</ul>`;
   };
   stand.sort((x, y) => (y.release_date ?? '9999').localeCompare(x.release_date ?? '9999'));
@@ -399,23 +419,19 @@ async function viewAuthor(id) {
     ${stand.length ? `<div class="grouphead"><h2 class="label">Standalone &amp; other</h2></div><ul class="rows">${stand.map((b) => row(b, false)).join('')}</ul>` : ''}`;
 }
 
-function resultsHtml(r, followed, followedAuthors = new Set()) {
+function resultsHtml(r, followed, followedAuthors = new Set(), watched = new Set()) {
   if (r.error) return `<p class="error" role="alert">${esc(r.error)}</p>`;
   if (!r.q) return '';
   const sCards = r.series.map((s) => `<li class="card">${img(null, s.cover_url, s.name, s.name)}<div><h3>${esc(s.name)}</h3>
       <p class="meta">${esc(s.author ?? 'Unknown author')}${s.books_count ? ` · ${s.books_count} books` : ''}</p>
-      ${followed.has(s.hardcover_series_id) ? '<p><span class="badge">Following</span></p>' : `
-      <form class="inline" data-form="follow">
-        <input type="hidden" name="hardcover_series_id" value="${s.hardcover_series_id}"><input type="hidden" name="name" value="${esc(s.name)}">
-        <input type="hidden" name="author" value="${esc(s.author ?? '')}"><input type="hidden" name="cover_url" value="${esc(s.cover_url ?? '')}">
-        <input type="hidden" name="complete" value="${s.complete ? 1 : ''}">
-        <button class="primary">Follow</button></form>`}</div></li>`).join('');
+      ${followed.has(s.hardcover_series_id) ? '<p><span class="badge">Following</span></p>' : followMenu({ hc: s.hardcover_series_id, name: s.name, author: s.author, cover: s.cover_url, complete: s.complete }, 'Follow')}</div></li>`).join('');
   const bCards = r.books.map((b) => `<li class="card">${img(null, b.cover_url, b.title, b.title)}<div><h3>${esc(b.title)}</h3>
       <p class="meta">${esc(b.author ?? 'Unknown author')}${b.release_date ? ' · ' + esc(fmtDate(b.release_date)) : ''}</p>
       <form class="inline" data-form="add-book">
         <input type="hidden" name="hardcover_book_id" value="${b.hardcover_book_id}"><input type="hidden" name="title" value="${esc(b.title)}">
         <input type="hidden" name="author" value="${esc(b.author ?? '')}"><input type="hidden" name="cover_url" value="${esc(b.cover_url ?? '')}">
-        <input type="hidden" name="isbn13" value="${esc(b.isbn13 ?? '')}"><button>Add as read</button></form></div></li>`).join('');
+        <input type="hidden" name="isbn13" value="${esc(b.isbn13 ?? '')}"><button>Add as read</button></form>
+      ${isOut(b.release_date) ? '' : bellBtn(b, watched.has(b.hardcover_book_id))}</div></li>`).join('');
   const aCards = (r.authors ?? []).map((a) => `<li class="card">${img(null, a.cover_url, a.name, a.name)}<div><h3>${esc(a.name)}</h3>
       <p class="meta">${a.books_count ? `${a.books_count} books` : 'Author'}</p>
       ${followedAuthors.has(a.hardcover_author_id) ? `<p><a class="badge" href="#/author/${a.hardcover_author_id}">Following</a></p>` : `
@@ -442,7 +458,8 @@ async function runSearch(q) {
   if (mine !== searchSeq) return;                          // a newer search superseded this one
   const followed = new Set((await store.all('series')).map((s) => s.hardcover_series_id));
   const followedAuthors = new Set((await store.all('author')).map((a) => a.hardcover_author_id));
-  out.innerHTML = resultsHtml(r, followed, followedAuthors); out.removeAttribute('aria-busy');
+  const watched = new Set((await watchList(store)).map((w) => w.hardcover_book_id));
+  out.innerHTML = resultsHtml(r, followed, followedAuthors, watched); out.removeAttribute('aria-busy');
   history.replaceState(null, '', '#/search?q=' + encodeURIComponent(q));
   hydrateCovers(out);
 }
@@ -487,6 +504,14 @@ async function collectUpcoming(today) {
     items.push({ date: r.release_date.slice(0, 10), title: r.title, sub: `${a.name} · author`, href: `#/author/${a.hardcover_author_id}`, ck: null, fb: r.cover_url, seed: a.name,
       actions: r.release_date.slice(0, 10) <= today ? `<button class="small" data-click="dismiss" data-kind="author" data-id="${r.author_id}" data-bid="${r.hardcover_book_id}">Dismiss</button>` : '' });
   }
+  const listed = new Set([...inSeries, ...(await store.all('author_book')).map((r) => r.hardcover_book_id)]), { ids: read } = await readBooks(store);
+  for (const w of await watchList(store)) {
+    if (!w.release_date || w.release_date < cutoff || listed.has(w.hardcover_book_id) || read.has(w.hardcover_book_id)) continue;
+    items.push({ date: w.release_date, title: w.title, sub: `${w.author ?? ''} · 🔔`, href: pickHref({ key: `b:${w.hardcover_book_id}`, ...w, why: 'You asked to be notified' }),
+      ck: null, fb: w.cover_url, seed: w.title, author: w.author,
+      actions: w.release_date <= today ? `<a class="btn small" target="_blank" rel="noopener" href="${esc(storeLink(shop, w.title, w.author ?? ''))}">Get it ↗</a>
+        <button class="small" data-click="unwatch" data-id="${w.hardcover_book_id}">Dismiss</button>` : '' });
+  }
   items.sort((x, y) => x.date.localeCompare(y.date) || x.title.localeCompare(y.title));
   return { items, undated: sbs.filter((r) => !r.release_date).length };
 }
@@ -521,7 +546,7 @@ const recCard = (r) => `<li class="card has-actions">
     <div class="body"><h2>${esc(r.title)}</h2><p class="meta">${esc(r.author ?? 'Unknown author')}</p>
       <p class="meta">${r.hardcover_book_id ? seriesLine(r.series) : 'Series'}${r.via ? ` · matched on ${esc(r.via)}` : ''}</p>
       <p><span class="chip ${r.kind === 'followed' ? 'near' : ''}">${esc(r.why)}</span>${r.rating ? ` <span class="chip">★ ${r.rating.toFixed(1)}</span>` : ''}</p></div></a>
-  <div class="card-actions">${r.series ? `<button class="small" data-click="rec-follow" data-hc="${r.series.hardcover_series_id}" data-name="${esc(r.series.name)}" data-author="${esc(r.series.author ?? r.author ?? '')}" data-cover="${esc(r.cover_url ?? '')}" data-complete="${r.series.complete ? 1 : ''}">Follow series</button>` : ''}
+  <div class="card-actions">${r.series ? followMenu({ hc: r.series.hardcover_series_id, name: r.series.name, author: r.series.author ?? r.author, cover: r.cover_url, complete: r.series.complete }) : ''}
     <button class="small" data-click="rec-dismiss" ${dismissAttrs(r)}>Not interested</button></div></li>`;
 
 // Released, unread next book of each started series (the "Continue reading" shelf).
@@ -640,15 +665,24 @@ async function viewLike(params) {
 }
 
 // Want to read tab: books saved from Discover, newest first; read ones drop off by themselves.
+// Below them, the other books you asked to be notified about (🔔).
 async function viewWant() {
-  const want = await wantList(store), shop = await getSetting(store, 'store', 'hardcover');
+  const want = await wantList(store), shop = await getSetting(store, 'store', 'hardcover'), today = todayIso();
+  const { ids: read } = await readBooks(store), watching = (await watchList(store)).filter((w) => !read.has(w.hardcover_book_id));
+  const watched = new Set(watching.map((w) => w.hardcover_book_id)), inWant = new Set(want.map((w) => w.hardcover_book_id));
+  const others = watching.filter((w) => !inWant.has(w.hardcover_book_id)).sort((x, y) => (x.release_date ?? '9999').localeCompare(y.release_date ?? '9999'));
+  const dateLine = (d) => (d ? `<p>${chip(when(d, today))} <span class="meta">${esc(fmtDate(d, today))}</span></p>` : '');
+  const card = (r, extra) => `<li class="card has-actions"><a class="cardlink" href="${pickHref(r)}">${img(null, r.cover_url, r.title, r.series?.name ?? r.title, 'cover', r.author)}
+      <div class="body"><h2>${esc(r.title)}</h2><p class="meta">${esc(r.author ?? 'Unknown author')}</p>${r.series !== undefined ? `<p class="meta">${seriesLine(r.series)}</p>` : ''}
+        ${r.release_date && !isOut(r.release_date, today) ? dateLine(r.release_date) : r.rating ? `<p><span class="chip">★ ${r.rating.toFixed(1)}</span></p>` : ''}</div></a>
+      <div class="card-actions">${isOut(r.release_date, today) || !r.release_date ? `<a class="btn small" target="_blank" rel="noopener" href="${esc(storeLink(shop, r.title, r.author ?? ''))}">Get it ↗</a>` : ''}
+        ${extra}</div></li>`;
   return `<div class="pagehead"><h1>Want to read</h1>${want.length ? `<span class="meta">${want.length} book${want.length === 1 ? '' : 's'}</span>` : ''}</div>
-    ${want.length ? `<ul class="cards">${want.map((r) => `<li class="card has-actions"><a class="cardlink" href="${pickHref(r)}">${img(null, r.cover_url, r.title, r.series?.name ?? r.title, 'cover', r.author)}
-      <div class="body"><h2>${esc(r.title)}</h2><p class="meta">${esc(r.author ?? 'Unknown author')}</p><p class="meta">${seriesLine(r.series)}</p>
-        ${r.rating ? `<p><span class="chip">★ ${r.rating.toFixed(1)}</span></p>` : ''}</div></a>
-      <div class="card-actions"><a class="btn small" target="_blank" rel="noopener" href="${esc(storeLink(shop, r.title, r.author ?? ''))}">Get it ↗</a>
-        <button class="small" data-click="want-remove" data-key="${esc(r.key)}">Remove</button></div></li>`).join('')}</ul>`
-      : '<section class="panel"><p>Nothing saved yet.</p><p class="meta">Tap “＋ Want to read” on any book in Discover to keep it here.</p><p><a class="btn" href="#/">Go to Discover</a></p></section>'}`;
+    ${want.length ? `<ul class="cards">${want.map((r) => card(r, `${isOut(r.release_date, today) ? '' : bellBtn(r, watched.has(r.hardcover_book_id))}
+        <button class="small" data-click="want-remove" data-key="${esc(r.key)}">Remove</button>`)).join('')}</ul>`
+      : '<section class="panel"><p>Nothing saved yet.</p><p class="meta">Tap “＋ Want to read” on any book in Discover to keep it here.</p><p><a class="btn" href="#/">Go to Discover</a></p></section>'}
+    ${others.length ? `${secHead(`Notifying you · ${others.length}`, '')}<p class="meta">Books you tapped 🔔 on: you hear when they get a date, when it moves, and when they come out.</p>
+      <ul class="cards">${others.map((w) => card({ ...w, key: `b:${w.hardcover_book_id}`, why: 'You asked to be notified' }, bellBtn(w, true))).join('')}</ul>` : ''}`;
 }
 
 const MORE_BACK = '<p><a class="back" href="#/more">← More</a></p>';
@@ -700,7 +734,7 @@ async function viewRecs(params = new URLSearchParams()) {
 async function viewUpdates() {
   const list = (await updates(store)).sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? '')).slice(0, 100);
   const unseen = list.filter((n) => !n.seen_at).length;
-  const tone = { announced: 'near', date_changed: 'warn', released: 'ok' };
+  const tone = { announced: 'near', date_changed: 'warn', released: 'ok', dated: 'near' };
   const readOf = new Map(), rows = new Map((await store.all('series_book')).map((r) => [r.key, r]));
   const abooks = new Set((await store.all('author_book')).map((r) => r.key));
   for (const n of list) if (n.series_id != null && !readOf.has(n.series_id)) readOf.set(n.series_id, await maxRead(store, n.series_id));
@@ -711,14 +745,15 @@ async function viewUpdates() {
   const card = (n) => {
     const w = when(n.release_date), row = n.series_id != null && n.position != null ? rows.get(sbKey(n.series_id, n.position)) : null;
     const canRead = n.kind === 'released' && row && !isRead(row, readOf.get(n.series_id));
-    const href = row ? `#/book/${n.series_id}/${n.position}` : n.author_id != null
+    const href = n.watch ? pickHref({ key: `b:${n.hardcover_book_id}`, hardcover_book_id: n.hardcover_book_id, title: n.title, author: n.series_name || null, cover_url: n.cover_url, why: 'You asked to be notified' })
+      : row ? `#/book/${n.series_id}/${n.position}` : n.author_id != null
       ? (abooks.has(`${n.author_id}:${n.hardcover_book_id}`) ? `#/abook/${n.author_id}/${n.hardcover_book_id}` : `#/author/${n.author_id}`) : `#/series/${n.series_id}`;
     return `<li class="card ${canRead ? 'has-actions' : ''} ${n.seen_at ? '' : 'unseen'}" data-swipe="dismiss-update" data-key="${esc(n.key)}">
       <a class="cardlink" href="${href}">
-      ${img(n.author_id != null ? null : (n.cover_key ?? `sb-${n.series_id}-${n.position}`), n.author_id != null ? n.cover_url : null, n.title ?? '', n.series_name)}
+      ${img(n.author_id != null || n.watch ? null : (n.cover_key ?? `sb-${n.series_id}-${n.position}`), n.author_id != null || n.watch ? n.cover_url : null, n.title ?? '', n.series_name)}
       <div class="body"><p><span class="chip ${tone[n.kind]}">${LABEL[n.kind]}</span>${n.seen_at ? '' : ' <span class="dot" aria-label="new"></span>'}</p>
       <h2>${n.position != null ? '#' + pos(n.position) + ' ' : ''}${esc(n.title)}</h2>
-      <p class="meta">${esc(n.series_name)}${n.author_id != null ? ' · author' : ''}</p>
+      <p class="meta">${esc(n.series_name)}${n.author_id != null ? ' · author' : n.watch ? ' · 🔔' : ''}</p>
       <p class="meta">${n.kind === 'date_changed' ? `${esc(fmtDate(n.detail))} → ${esc(fmtDate(n.release_date))}` : `${esc(fmtDate(n.release_date))}${w.tone === 'tba' ? '' : ' · ' + esc(w.text)}`}</p>
 </div></a>
       ${canRead ? `<div class="card-actions"><button class="small primary" data-click="toggle-read" data-id="${n.series_id}" data-pos="${n.position}" data-dismiss="${esc(n.key)}">Mark read</button></div>` : ''}
@@ -779,7 +814,7 @@ async function viewMore(sub) {
       ${(k === 'data' && backupDue) || (k === 'account' && !hasToken) ? '<span class="dot" aria-label="needs attention"></span>' : ''}<span class="chev" aria-hidden="true">›</span></a></li>`).join('')}</ul>
     ${standalone ? '' : `<section class="panel"><h2>Install</h2><p class="meta">Android: browser menu → Install app / Add to Home screen. iPhone: Share → Add to Home Screen (needed so iOS keeps your data).</p>
       ${installPrompt ? '<p><button data-click="install">Install app</button></p>' : ''}</section>`}
-    <p class="meta center">Book Finder · v17</p>`;
+    <p class="meta center">Book Finder · v18</p>`;
   const head = `<p><a class="back" href="#/more">← More</a></p><div class="pagehead"><h1>${page[1]}</h1></div>`;
   if (sub === 'appearance') {
     const shopPref = await getSetting(store, 'store', 'hardcover');
@@ -950,8 +985,12 @@ const clickActions = {
   async 'rec-follow'(el) {
     const d = el.dataset;
     await unremoveSeries(store, Number(d.hc));
-    const sid = await followSeries(store, client, { hardcover_series_id: Number(d.hc), name: d.name, author: d.author || null, cover_url: d.cover || null, complete: Boolean(d.complete) }, 0, covers);
-    toast(`Following “${d.name}”. Use “Mark all released as read” on its page if you've read it.`); location.hash = `#/series/${sid}`;
+    el.closest('details')?.removeAttribute('open');
+    const sid = await followSeries(store, client, { hardcover_series_id: Number(d.hc), name: d.name, author: d.author || null, cover_url: d.cover || null, complete: Boolean(d.complete), mode: d.mode }, 0, covers);
+    const at = await maxRead(store, sid);
+    toast(d.mode === 'new' ? `Following “${d.name}”: you'll hear about new books.`
+      : `Following “${d.name}”.${at ? ` Marked read up to #${at} from your history.` : ' Mark what you have read on its page.'}`, { ms: 4500 });
+    location.hash = `#/series/${sid}`;
   },
   async 'search-tab'(el) {
     for (const b of document.querySelectorAll('[data-click="search-tab"]')) { const on = b === el; b.setAttribute('aria-selected', on); b.setAttribute('aria-pressed', on); }
@@ -997,10 +1036,23 @@ const clickActions = {
       try { hc = await client.wantToRead(it.hardcover_book_id); note = ' Also on your Hardcover Want to Read.'; } catch (e) { note = ` (Hardcover didn't take it: ${msg(e)})`; }
     }
     await addWant(store, it, hc ? { hc_user_book_id: hc } : {});
-    toast(`Saved “${it.title}”.${note}`, { ms: 4000 }); await route();
+    // Not out yet (or no date): you'll hear when it gets a date and when it comes out.
+    const date = await releaseDate(it);
+    if (!isOut(date) && !(await watchList(store)).some((w) => w.hardcover_book_id === it.hardcover_book_id)
+      && await watchBook(store, { ...it, release_date: date }, todayIso(), { auto: true })) note += date ? ' 🔔 You’ll hear when it’s out.' : ' 🔔 You’ll hear when it gets a date.';
+    toast(`Saved “${it.title}”.${note}`, { ms: 4500 }); await route();
   },
+  async watch(el) {
+    const d = el.dataset, b = { hardcover_book_id: Number(d.id), title: d.title, author: d.author || null, cover_url: d.cover || null };
+    b.release_date = d.date || await releaseDate(b);
+    if (!(await watchBook(store, b))) return toast(`“${b.title}” is already out.`, { ms: 3000 });
+    toast(b.release_date ? `🔔 You'll hear if the date moves and when “${b.title}” comes out.` : `🔔 You'll hear when “${b.title}” gets a date.`, { ms: 4000 });
+    await route();
+  },
+  async unwatch(el) { await unwatchBook(store, Number(el.dataset.id)); await route(); },
   async 'want-remove'(el) {
     const gone = await removeWant(store, el.dataset.key);
+    if (gone && (await watchList(store)).some((w) => w.hardcover_book_id === gone.hardcover_book_id && w.auto)) await unwatchBook(store, gone.hardcover_book_id);
     if (gone?.hc_user_book_id && await getSetting(store, 'hc_token', '')) {
       try { await client.removeUserBook(gone.hc_user_book_id); } catch (e) { toast(`Removed here; Hardcover still lists it (${msg(e)}).`, { error: true }); }
     }
@@ -1011,6 +1063,7 @@ const clickActions = {
     if (!it) return;
     const r = await addSearchBook(store, client, { hardcover_book_id: it.hardcover_book_id, title: it.title, author: it.author ?? '', cover_url: it.cover_url ?? '', isbn13: '' }, covers);
     if (el.dataset.love && !(await getFavourites(store)).some((f) => f.id === it.hardcover_book_id)) await toggleFavourite(store, it.hardcover_book_id, it.title);
+    await unwatchBook(store, it.hardcover_book_id);
     const gone = await removeWant(store, it.key);
     if (gone?.hc_user_book_id && await getSetting(store, 'hc_token', '')) { try { await client.removeUserBook(gone.hc_user_book_id); } catch { /* Hardcover keeps it; harmless */ } }
     toast(`${r.duplicate ? 'Already in your history' : `Added “${it.title}”`}${r.series ? `, following ${r.series}` : ''}.${el.dataset.love ? ' ♥ It now steers your picks.' : ''}`, { ms: 4000 });
@@ -1117,13 +1170,6 @@ const clickActions = {
 const formActions = {
   async search(fd) { await runSearch(fd.get('q') ?? ''); },
   async like(fd) { const q = (fd.get('q') ?? '').trim(); if (q) location.hash = `#/like?q=${encodeURIComponent(q)}`; },
-  async follow(fd) {
-    await unremoveSeries(store, Number(fd.get('hardcover_series_id')));
-    const sid = await followSeries(store, client, { hardcover_series_id: Number(fd.get('hardcover_series_id')), name: fd.get('name'),
-      author: fd.get('author') || null, cover_url: fd.get('cover_url') || null, complete: Boolean(fd.get('complete')) },
-      Math.max(0, parseInt(fd.get('read_up_to'), 10) || 0), covers);
-    location.hash = `#/series/${sid}`;
-  },
   async 'follow-author'(fd) {
     const aid = await followAuthor(store, client, { hardcover_author_id: Number(fd.get('hardcover_author_id')), name: fd.get('name'), cover_url: fd.get('cover_url') || null });
     toast(`Following ${fd.get('name')}. Their books show in Discover; new ones under More → Following & releases.`); location.hash = `#/author/${aid}`;

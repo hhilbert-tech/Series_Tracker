@@ -5,6 +5,7 @@ import { HardcoverAuthError, HardcoverError } from './hardcover.js';
 import { maxRead, nowIso, sbKey, todayIso } from './db.js';
 import { fetchSeriesCovers } from './covers.js';
 import { runAuthorCheck } from './authors.js';
+import { runWatchCheck } from './watch.js';
 
 const isPast = (d, today) => /^\d{4}-\d{2}-\d{2}/.test(d ?? '') && d.slice(0, 10) <= today;
 
@@ -79,6 +80,8 @@ export async function runCheck(store, client, { today = todayIso(), covers = nul
   if (!res.errors.some((m) => /token/i.test(m))) {              // an auth failure above applies to authors too
     const a = await runAuthorCheck(store, client, { today });
     res.events.push(...a.events); res.errors.push(...a.errors);
+    try { const w = await runWatchCheck(store, client, { today }); res.events.push(...w.events); res.errors.push(...w.errors); }
+    catch (e) { res.errors.push(e.message ?? String(e)); }
   }
   return res;
 }
@@ -89,8 +92,8 @@ export async function updates(store, { onlyUnseen = false } = {}) {
   const authors = new Map((await store.all('author')).map((a) => [a.hardcover_author_id, a]));
   const sbs = new Map((await store.all('series_book')).map((r) => [r.key, r]));
   return (await store.all('notification_log'))
-    .filter((n) => !n.suppressed && !n.dismissed && (!onlyUnseen || !n.seen_at) && (n.author_id != null ? authors.has(n.author_id) : names.has(n.series_id)))
-    .map((n) => (n.author_id != null
+    .filter((n) => !n.suppressed && !n.dismissed && (!onlyUnseen || !n.seen_at) && (n.watch || (n.author_id != null ? authors.has(n.author_id) : names.has(n.series_id))))
+    .map((n) => (n.watch ? { ...n, old_date: n.detail, cover_key: null } : n.author_id != null
       ? { ...n, series_name: authors.get(n.author_id).name, old_date: n.detail, cover_key: null }
       : { ...n, series_name: names.get(n.series_id).name, old_date: n.detail,
         cover_key: sbs.get(sbKey(n.series_id, n.position))?.cover_key ?? null }));

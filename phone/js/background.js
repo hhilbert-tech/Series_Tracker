@@ -15,7 +15,7 @@ export async function runBackgroundCheck(registration) {
   const first = res.events[0];
   const more = res.events.length > 1 ? ` (+${res.events.length - 1} more)` : '';
   await registration.showNotification('Book Finder', {
-    body: `${{ released: 'Out now', announced: 'Announced', date_changed: 'New date' }[first.kind] ?? 'Update'} · ${first.series_name}: ${first.position != null ? '#' + first.position + ' ' : ''}${first.title}${more}`,
+    body: `${{ released: 'Out now', announced: 'Announced', date_changed: 'New date', dated: 'Date announced' }[first.kind] ?? 'Update'} · ${first.series_name}: ${first.position != null ? '#' + first.position + ' ' : ''}${first.title}${more}`,
     icon: 'icons/icon-192.png', tag: 'series-update', data: { url: './#/updates' },
   });
 }

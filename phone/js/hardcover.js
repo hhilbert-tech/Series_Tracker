@@ -228,17 +228,17 @@ export class HardcoverClient {
   }
 
   // Basic info, first author and first series of some books, one request:
-  // [{hardcover_book_id, title, author, author_id, users_count, rating, pages, cover_url, series: {hardcover_series_id, name, author, complete, position}|null}].
+  // [{hardcover_book_id, title, author, author_id, users_count, rating, pages, cover_url, release_date, series: {hardcover_series_id, name, author, complete, position}|null}].
   async booksInfo(ids) {
     ids = [...new Set(ids)].slice(0, 60).map(Number);
     if (!ids.length) return [];
     const data = await this.gql(`query BooksInfo($ids: [Int!]) { books(where: {id: {_in: $ids}, canonical_id: {_is_null: true}}) {
-      id title users_count rating pages image { url } contributions { author { id name } } book_series(limit: 1) { position series { ${SERIES_FIELDS} } } } }`, { ids });
+      id title release_date users_count rating pages image { url } contributions { author { id name } } book_series(limit: 1) { position series { ${SERIES_FIELDS} } } } }`, { ids });
     return (data.books ?? []).map((b) => {
       const bs = b.book_series?.[0], s = bs?.series, a = b.contributions?.[0]?.author;
       return { hardcover_book_id: Number(b.id), title: b.title ?? '', author: a?.name ?? s?.author?.name ?? null, author_id: Number(a?.id) || null,
         users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null,
-        cover_url: b.image?.url ?? null,
+        cover_url: b.image?.url ?? null, release_date: dateOf(b.release_date),
         series: s?.id ? { hardcover_series_id: Number(s.id), name: s.name ?? '', author: s.author?.name ?? null, complete: Boolean(s.is_completed), position: num(bs.position) } : null };
     });
   }
@@ -251,13 +251,14 @@ export class HardcoverClient {
     const data = await this.gql(`query FirstBooks($ids: [Int!]) { book_series(
       where: {series_id: {_in: $ids}, position: {_eq: 1}, book: {canonical_id: {_is_null: true}, is_partial_book: {_eq: false}, compilation: {_eq: false}}}
       distinct_on: series_id order_by: [{series_id: asc}, {book: {users_count: desc}}]
-    ) { series_id book { id title users_count rating pages image { url } contributions { author { id name } } } } }`, { ids: seriesIds });
+    ) { series_id book { id title release_date users_count rating pages image { url } contributions { author { id name } } } } }`, { ids: seriesIds });
     const out = new Map();
     for (const row of data.book_series ?? []) {
       const b = row.book, a = b?.contributions?.[0]?.author;
       if (!b?.id || row.series_id == null) continue;
       out.set(Number(row.series_id), { hardcover_book_id: Number(b.id), title: b.title ?? '', author: a?.name ?? null, author_id: Number(a?.id) || null,
-        users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null, cover_url: b.image?.url ?? null });
+        users_count: Number(b.users_count) || 0, rating: Number(b.rating) > 0 ? Number(b.rating) : null, pages: Number(b.pages) > 0 ? Number(b.pages) : null, cover_url: b.image?.url ?? null,
+        release_date: dateOf(b.release_date) });
     }
     return out;
   }

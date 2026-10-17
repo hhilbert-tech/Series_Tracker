@@ -9,6 +9,12 @@ and popular books in your genres. Also on Discover:
 - *Not interested* twice for the same author (or genre row) sends the rest of them to the end; *Never suggest* hides an author.
 
 **Want to read** (tab): books you saved with *＋ Want to read* on a pick, also marked Want to Read on Hardcover when your token allows it.
+Saving a book that isn't out yet turns on its 🔔.
+
+**Release alerts without bookkeeping:**
+- *🔔 Notify me* on any single book (pick page, search results, Want to read): you hear when it gets a date, when the date moves, and when it comes out. Listed under *Notifying you* on the Want to read tab.
+- *Follow series ▾* asks: *Only new books* (everything already out counts as done) or *I'm reading it*. Either way, books already in your history (imports, *I've read it*) set your place automatically.
+- Following an author announces every new book by them; nothing to mark.
 
 **More → Following & releases** holds the series and authors you follow plus the reminder side: *Releases* (next release, just out, coming up, continue reading) and the *Updates* feed; the unread count shows on the More tab.
 
